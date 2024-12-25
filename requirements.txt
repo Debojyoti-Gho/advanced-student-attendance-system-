@@ -1,0 +1,4 @@
+sqlite3==3.35.4
+streamlit==1.22.0
+geopy==2.2.0
+bleak==0.19.0
