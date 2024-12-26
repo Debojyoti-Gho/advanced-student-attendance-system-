@@ -248,26 +248,11 @@ elif menu == "Student Login":
                         for device_name, mac_address in ble_signal.items():
                             st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
 
-                        # Automatically check if the required Bluetooth device is in the list
-                        required_device_name = "6C:E8:C6:75:A1:EA"
-                        required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Replace with the actual MAC address if known
-
-                        found_device = False
-                        for device_name, mac_address in ble_signal.items():
-                            if required_device_name in device_name or mac_address == required_mac_id:
-                                st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
-                                found_device = True
-                                break
-
-                        if found_device:
                             # Save user login to session state
                             st.session_state.logged_in = True
                             st.session_state.user_id = user_id
                             st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
-                        else:
-                            st.warning("Required Bluetooth device not found. Please ensure the device is in range and try again.")
-                    else:
-                        st.warning("Skipping Bluetooth check. Proceeding without Bluetooth detection.")
+                        
                         # Save user login to session state
                         st.session_state.logged_in = True
                         st.session_state.bluetooth_selected = False  # Mark Bluetooth as not selected
