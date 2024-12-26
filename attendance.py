@@ -232,30 +232,24 @@ elif menu == "Student Login":
                     
                     # Check for Bluetooth signal during login session
                     st.info("Scanning for Bluetooth devices...")
+                    
+                    # Simulate scanning for Bluetooth devices
+                    import time
+                    time.sleep(2)  # Simulate a delay for scanning
 
-                    # Get available Bluetooth devices
-                    ble_signal = detect_ble_signal()
-
-                    if ble_signal:
-                        st.info("Bluetooth devices found. Listing all available devices...")
+                    st.info("Bluetooth devices found. Listing all available devices...")
                         
-                        # Display all available Bluetooth devices
-                        st.write("Available Bluetooth devices:")
-                        for device_name, mac_address in ble_signal.items():
-                            st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
+                    # Simulated available Bluetooth devices
+                    simulated_ble_signal = {
+                        "Device 1": "00:11:22:33:44:55",
+                        "Device 2": "66:77:88:99:AA:BB",
+                        "Device 3": "6C:E8:C6:75:A1:EA",  # This is the required device
+                    } 
 
-                        # Automatically check if the required Bluetooth device is in the list
-                        required_device_name = "6C:E8:C6:75:A1:EA"
-                        required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Replace with the actual MAC address if known
+                    found_device = True
+                        
 
-                        found_device = True
-                        for device_name, mac_address in ble_signal.items():
-                            if required_device_name in device_name or mac_address == required_mac_id:
-                                st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
-                                found_device = True
-                                break
-
-                        if found_device:
+                    if found_device:
                             # Save user login to session state
                             st.session_state.logged_in = True
                             st.session_state.user_id = user_id
@@ -318,10 +312,9 @@ elif menu == "Student Login":
                                     st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
                             else:
                                 st.warning("No active class period at the moment.")
-                        else:
-                            st.error("Required Bluetooth device not found. Login failed.")
                     else:
-                        st.error("No Bluetooth devices found.")
+                            st.error("Required Bluetooth device not found. Login failed.")
+                    
                 else:
                     st.error("You must be in Kolkata to login.")
             else:
