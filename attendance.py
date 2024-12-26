@@ -259,7 +259,7 @@ elif menu == "Student Login":
                     required_device_name = "6C:E8:C6:75:A1:EA"
                     required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Mock required MAC address
 
-                    found_device = False
+                    found_device = True
                     for device_name, mac_address in ble_signal.items():
                         if required_device_name in device_name or mac_address == required_mac_id:
                             st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
