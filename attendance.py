@@ -5,10 +5,10 @@ import socket
 import asyncio
 from bleak import BleakScanner
 import datetime
-from datetime import datetime
+from datetime import date, datetime
 
 # Database setup
-conn = sqlite3.connect("students.db", check_same_thread=False)
+conn = sqlite3.connect("asas.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # Create tables
@@ -63,6 +63,24 @@ conn.commit()
 # Add default admin credentials
 cursor.execute("INSERT OR IGNORE INTO admin (admin_id, password) VALUES ('admin', 'admin123')")
 conn.commit()
+
+# Register adapters and converters for SQLite
+def adapt_date(d):
+    return d.isoformat()
+
+def adapt_datetime(dt):
+    return dt.isoformat()
+
+def convert_date(s):
+    return date.fromisoformat(s.decode("utf-8"))
+
+def convert_datetime(s):
+    return datetime.fromisoformat(s.decode("utf-8"))
+
+sqlite3.register_adapter(date, adapt_date)
+sqlite3.register_adapter(datetime, adapt_datetime)
+sqlite3.register_converter("DATE", convert_date)
+sqlite3.register_converter("DATETIME", convert_datetime)
 
 # Helper functions
 def get_device_ip():
@@ -609,36 +627,67 @@ elif menu == "Admin Login":
                     else:
                         st.write("No attendance records found for this student.")
                         
-                if st.button(f"View/Edit Details for {student_name}", key=f"edit_{student_id}"):
-                    st.subheader(f"Edit Details for {student_name}")
+                # Initialize session state for form visibility
+                if f"form_shown_{student_id}" not in st.session_state:
+                    st.session_state[f"form_shown_{student_id}"] = False
 
-                    # Adding unique keys to each widget
-                    new_user_id = st.text_input("User ID", student[0], key=f"user_id_{student_id}")
-                    new_password = st.text_input("Password", type="password", key=f"password_{student_id}")
-                    new_device_ip = st.text_input("Device IP", student[9], key=f"device_ip_{student_id}")
-                    new_name = st.text_input("New Name", student[2], key=f"name_{student_id}")
-                    new_roll = st.text_input("New Roll", student[3], key=f"roll_{student_id}")
-                    new_section = st.text_input("New Section", student[4], key=f"section_{student_id}")
-                    new_email = st.text_input("New Email", student[5], key=f"email_{student_id}")
-                    new_enrollment_no = st.text_input("New Enrollment No", student[6], key=f"enrollment_{student_id}")
+                # Button to toggle form visibility
+                if st.button(f"View/Edit Details for {student_name}", key=f"edit_{student_id}"):
+                    st.session_state[f"form_shown_{student_id}"] = not st.session_state[f"form_shown_{student_id}"]
+
+                # Display the form if it's active
+                if st.session_state[f"form_shown_{student_id}"]:
+                    st.header(f"Edit Details for {student_name}")
+
+                    # Pre-fill existing student data into form fields
+                    new_name = st.text_input("Name", value=student[2], key=f"name_{student_id}")
+                    new_roll = st.text_input("Roll Number", value=student[3], key=f"roll_{student_id}")
+                    new_section = st.text_input("Section", value=student[4], key=f"section_{student_id}")
+                    new_email = st.text_input("Email", value=student[5], key=f"email_{student_id}")
+                    new_enrollment_no = st.text_input("Enrollment Number", value=student[6], key=f"enrollment_{student_id}")
                     new_year = st.selectbox(
-                        "New Year", ["1", "2", "3", "4"],
+                        "Year", ["1", "2", "3", "4"],
                         index=["1", "2", "3", "4"].index(student[7]),
                         key=f"year_{student_id}"
                     )
-                    new_semester = st.text_input("New Semester", student[8], key=f"semester_{student_id}")
+                    new_semester = st.text_input("Semester", value=student[8], key=f"semester_{student_id}")
+                    new_user_id = st.text_input("User ID", value=student[0], key=f"user_id_{student_id}")
+                    new_password = st.text_input("Password", type="password", value=student[1], key=f"password_{student_id}")
+                    new_device_ip = st.text_input("Device IP", value=student[9], key=f"device_ip_{student_id}")
 
+                    # Save changes button
                     if st.button("Save Changes", key=f"save_changes_{student_id}"):
-                        cursor.execute("""
-                            UPDATE students
-                            SET user_id = ?, password = ?, device_id = ?, name = ?, roll = ?, section = ?, email = ?, enrollment_no = ?, year = ?, semester = ?
-                            WHERE user_id = ?
-                        """, (
-                            new_user_id, new_password, new_device_ip, new_name, new_roll, new_section, 
-                            new_email, new_enrollment_no, new_year, new_semester, student_id
-                        ))
-                        conn.commit()
-                        st.success(f"Details for {student_name} have been updated!")
+                        try:
+                            # Validate inputs
+                            if not new_user_id or not new_password or not new_device_ip:
+                                st.error("User ID, Password, and Device IP are required fields.")
+                            else:
+                                # Update student details in the database
+                                cursor.execute("""
+                                    UPDATE students
+                                    SET user_id = ?, password = ?, device_id = ?, name = ?, roll = ?, section = ?, email = ?, enrollment_no = ?, year = ?, semester = ?
+                                    WHERE user_id = ?
+                                """, (
+                                    new_user_id, new_password, new_device_ip, new_name, new_roll, new_section,
+                                    new_email, new_enrollment_no, new_year, new_semester, student_id
+                                ))
+                                conn.commit()
+
+                                # Confirm success
+                                if cursor.rowcount > 0:
+                                    st.success(f"Details for {student_name} have been successfully updated!")
+                                else:
+                                    st.error("No changes were made. Please verify the details.")
+                                # Close the form after successful update
+                                st.session_state[f"form_shown_{student_id}"] = False
+                        except Exception as e:
+                            st.error(f"An error occurred while updating the details: {str(e)}")
+
+                    # Cancel button to hide the form
+                    if st.button("Cancel", key=f"cancel_edit_{student_id}"):
+                        st.session_state[f"form_shown_{student_id}"] = False
+
+
 
                 # Button to deregister a student
                 if st.button(f"Deregister {student_name}", key=f"deregister_{student_id}"):
@@ -647,25 +696,66 @@ elif menu == "Admin Login":
                     conn.commit()
                     st.warning(f"Student {student_name} has been deregistered!")
 
-                # Button to manually overwrite attendance
-                if st.button(f"Overwrite Attendance for {student_name}", key=f"attendance_{student_id}"):
-                    st.subheader(f"Manually Update Attendance for {student_name}")
-                    selected_date = st.date_input("Select Date")
+                # Initialize session state for attendance form visibility
+                if f"attendance_form_shown_{student_id}" not in st.session_state:
+                    st.session_state[f"attendance_form_shown_{student_id}"] = False
+
+                # Button to toggle attendance form visibility
+                if st.button(f"Overwrite Attendance for {student_name}", key=f"toggle_attendance_{student_id}"):
+                    st.session_state[f"attendance_form_shown_{student_id}"] = not st.session_state[f"attendance_form_shown_{student_id}"]
+
+                # Display the attendance form if it's active
+                if st.session_state[f"attendance_form_shown_{student_id}"]:
+                    st.header(f"Manually Update Attendance for {student_name}")
+
+                    # Date input for selecting the attendance date
+                    selected_date = st.date_input("Select Date", key=f"attendance_date_{student_id}")
                     selected_day = selected_date.strftime("%A")
 
-                    # Inputs for each period (7 periods assumed)
+                    # Fetch existing attendance for the selected date
+                    cursor.execute("""
+                        SELECT period_1, period_2, period_3, period_4, period_5, period_6, period_7
+                        FROM attendance
+                        WHERE student_id = ? AND date = ?
+                    """, (student_id, selected_date))
+                    existing_attendance = cursor.fetchone()
+
+                    # Pre-fill attendance status for each period
                     attendance = []
                     for period in range(1, 8):
-                        status = st.selectbox(f"Period {period} Status", ["Absent", "Present"], key=f"{student_id}_period_{period}")
+                        prefilled_status = "Present" if existing_attendance and existing_attendance[period - 1] == 1 else "Absent"
+                        status = st.selectbox(
+                            f"Period {period} Status",
+                            ["Absent", "Present"],
+                            index=["Absent", "Present"].index(prefilled_status),
+                            key=f"attendance_period_{period}_{student_id}"
+                        )
                         attendance.append(1 if status == "Present" else 0)
 
-                    if st.button("Save Attendance"):
-                        cursor.execute("""
-                            REPLACE INTO attendance (student_id, date, day, period1, period2, period3, period4, period5, period6, period7)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (student_id, selected_date, selected_day, *attendance))
-                        conn.commit()
-                        st.success(f"Attendance for {student_name} on {selected_date} has been updated!")
+                    # Save changes button
+                    if st.button("Save Attendance", key=f"save_attendance_{student_id}"):
+                        try:
+                            # Update attendance in the database
+                            cursor.execute("""
+                                REPLACE INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (student_id, selected_date, selected_day, *attendance))
+                            conn.commit()
+
+                            # Confirm success
+                            if cursor.rowcount > 0:
+                                st.success(f"Attendance for {student_name} on {selected_date} has been successfully updated!")
+                            else:
+                                st.error("No changes were made. Please verify the details.")
+
+                            # Close the form after successful update
+                            st.session_state[f"attendance_form_shown_{student_id}"] = False
+                        except Exception as e:
+                            st.error(f"An error occurred while updating the attendance: {str(e)}")
+
+                    # Cancel button to hide the form
+                    if st.button("Cancel", key=f"cancel_attendance_{student_id}"):
+                        st.session_state[f"attendance_form_shown_{student_id}"] = False
 
         else:
             st.write("No registered students found.")
