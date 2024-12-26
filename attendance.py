@@ -229,101 +229,109 @@ elif menu == "Student Login":
                 location = get_location()
                 if location and "Kolkata" in location:
                     st.success(f"Login successful! Welcome, {user[2]}")
-                    
-                    # Check for Bluetooth signal during login session
+
+                    # Mock the Bluetooth signal scan
                     st.info("Scanning for Bluetooth devices...")
 
-                    # Get available Bluetooth devices
-                    try:
-                        ble_signal = detect_ble_signal()
-                    except RuntimeError as e:
-                        st.warning(f"Bluetooth scanning failed or skipped: {e}")
-                        ble_signal = None
+                    # Mock available Bluetooth devices (replace this with your own test data)
+                    ble_signal = {
+                        "Device_A": "00:11:22:33:44:55",
+                        "Device_B": "66:77:88:99:00:11",
+                        "JR_JioSTB-RPCSBJG00013449": "6C:E8:C6:75:A1:EA"  # Mock required device
+                    }
 
                     if ble_signal:
                         st.info("Bluetooth devices found. Listing all available devices...")
-                        
+
                         # Display all available Bluetooth devices
                         st.write("Available Bluetooth devices:")
                         for device_name, mac_address in ble_signal.items():
                             st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
 
+                        # Automatically check if the required Bluetooth device is in the list
+                        required_device_name = "6C:E8:C6:75:A1:EA"
+                        required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Mock required MAC address
+
+                        found_device = False
+                        for device_name, mac_address in ble_signal.items():
+                            if required_device_name in device_name or mac_address == required_mac_id:
+                                st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
+                                found_device = True
+                                break
+
+                        if found_device:
                             # Save user login to session state
                             st.session_state.logged_in = True
                             st.session_state.user_id = user_id
                             st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
-                        
-                        # Save user login to session state
-                        st.session_state.logged_in = True
-                        st.session_state.bluetooth_selected = False  # Mark Bluetooth as not selected
-
 
                             # Get the current period and mark attendance
-                        current_period = get_current_period()
-                        if current_period:
-                            st.success(f"Attendance for {current_period} is being marked automatically.")
-                            
-                            # Define period times for attendance marking
-                            period_times = {
-                                "Period 1": ("09:30", "10:20"),
-                                "Period 2": ("10:20", "11:10"),
-                                "Period 3": ("11:10", "12:00"),
-                                "Period 4": ("12:00", "12:50"),
-                                "Period 5": ("12:58", "14:30"),
-                                "Period 6": ("14:30", "15:20"),
-                                "Period 7": ("15:20", "16:10")
-                            }
+                            current_period = get_current_period()
+                            if current_period:
+                                st.success(f"Attendance for {current_period} is being marked automatically.")
+                                
+                                # Define period times for attendance marking
+                                period_times = {
+                                    "Period 1": ("09:30", "10:20"),
+                                    "Period 2": ("10:20", "11:10"),
+                                    "Period 3": ("11:10", "12:00"),
+                                    "Period 4": ("12:00", "12:50"),
+                                    "Period 5": ("12:58", "14:30"),
+                                    "Period 6": ("14:30", "15:20"),
+                                    "Period 7": ("15:20", "16:10")
+                                }
 
-                            # Initialize attendance data for all periods as False (Absent)
-                            attendance_data = {period: False for period in period_times.keys()}
-                            
-                            # Mark the current period as present (True)
-                            attendance_data[current_period] = True
-                            
-                            # Define the days array
-                            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                            
-                            # Automatically set the current day from the system date
-                            current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
+                                # Initialize attendance data for all periods as False (Absent)
+                                attendance_data = {period: False for period in period_times.keys()}
+                                
+                                # Mark the current period as present (True)
+                                attendance_data[current_period] = True
+                                
+                                # Define the days array
+                                days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                                
+                                # Automatically set the current day from the system date
+                                current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
 
-                            # Display the day selector with the current day pre-selected
-                            selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
-                            
-                            # Check if attendance record already exists for the student on the same date and day
-                            cursor.execute("""
-                                SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ?
-                            """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                            existing_record = cursor.fetchone()
-
-                            if existing_record:
-                                # Update the attendance for the current period
-                                period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
-                                cursor.execute(f"""
-                                    UPDATE attendance 
-                                    SET {period_column} = 1
-                                    WHERE student_id = ? AND date = ? AND day = ?
+                                # Display the day selector with the current day pre-selected
+                                selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
+                                
+                                # Check if attendance record already exists for the student on the same date and day
+                                cursor.execute(""" 
+                                    SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ? 
                                 """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                                conn.commit()
-                                st.success(f"Attendance updated for {current_period} on {selected_day}!")
+                                existing_record = cursor.fetchone()
+
+                                if existing_record:
+                                    # Update the attendance for the current period
+                                    period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
+                                    cursor.execute(f"""
+                                        UPDATE attendance 
+                                        SET {period_column} = 1 
+                                        WHERE student_id = ? AND date = ? AND day = ? 
+                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
+                                    conn.commit()
+                                    st.success(f"Attendance updated for {current_period} on {selected_day}!")
+                                else:
+                                    # Insert new attendance record
+                                    cursor.execute("""
+                                        INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
+                                    conn.commit()
+                                    st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
                             else:
-                                # Insert new attendance record
-                                cursor.execute("""
-                                    INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
-                                conn.commit()
-                                st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
+                                st.warning("No active class period at the moment.")
                         else:
-                            st.warning("No active class period at the moment.")
-                    
+                            st.error("Required Bluetooth device not found. Login failed.")
+                    else:
+                        st.error("No Bluetooth devices found.")
                 else:
-                    st.error("No Bluetooth devices found.")
+                    st.error("You must be in Kolkata to login.")
             else:
-                st.error("You must be in Kolkata to login.")
+                st.error("Device ID does not match.")
         else:
-            st.error("Device ID does not match.")
-    else:
-        st.error("Invalid user ID or password.")
+            st.error("Invalid user ID or password.")
 
     # Display student attendance search form
     if st.session_state.get('logged_in', False):
