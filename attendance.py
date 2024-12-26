@@ -215,121 +215,126 @@ elif menu == "Student Login":
     user_id = st.text_input("User ID")
     password = st.text_input("Password", type="password")
     
-    # Fetch the device ID (IP address)
-    device_id = get_device_ip()
+    # Mock the device ID as if it's fetched
+    device_id = "mocked_device_id"  # You can mock this value
 
     if not device_id:
-        st.error("Could not fetch device IP address. Login cannot proceed.")
+        st.error("Could not fetch device ID. Login cannot proceed.")
     
     if st.button("Login") and not st.session_state.get('bluetooth_selected', False):
-        cursor.execute("SELECT * FROM students WHERE user_id = ? AND password = ?", (user_id, password))
-        user = cursor.fetchone()
+        # Mock user fetch as successful (replace this with a real database query if needed)
+        user = {
+            'user_id': user_id,
+            'password': password,
+            'name': "Test Student",
+            'device_id': device_id  # Assuming device ID matches
+        }
+
         if user:
-            if user[-1] == device_id:  # Match device_id from IP address
-                location = get_location()
-                if location and "Kolkata" in location:
-                    st.success(f"Login successful! Welcome, {user[2]}")
+            # Simulating successful login without checking the device ID (you can skip this check)
+            location = "Kolkata"  # Assume the location check passes
 
-                    # Mock the Bluetooth signal scan
-                    st.info("Scanning for Bluetooth devices...")
+            if location and "Kolkata" in location:
+                st.success(f"Login successful! Welcome, {user['name']}")
 
-                    # Mock available Bluetooth devices (replace this with your own test data)
-                    ble_signal = {
-                        "Device_A": "00:11:22:33:44:55",
-                        "Device_B": "66:77:88:99:00:11",
-                        "JR_JioSTB-RPCSBJG00013449": "6C:E8:C6:75:A1:EA"  # Mock required device
-                    }
+                # Mock the Bluetooth signal scan
+                st.info("Scanning for Bluetooth devices...")
 
-                    if ble_signal:
-                        st.info("Bluetooth devices found. Listing all available devices...")
+                # Mock available Bluetooth devices (replace this with your own test data)
+                ble_signal = {
+                    "Device_A": "00:11:22:33:44:55",
+                    "Device_B": "66:77:88:99:00:11",
+                    "JR_JioSTB-RPCSBJG00013449": "6C:E8:C6:75:A1:EA"  # Mock required device
+                }
 
-                        # Display all available Bluetooth devices
-                        st.write("Available Bluetooth devices:")
-                        for device_name, mac_address in ble_signal.items():
-                            st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
+                if ble_signal:
+                    st.info("Bluetooth devices found. Listing all available devices...")
 
-                        # Automatically check if the required Bluetooth device is in the list
-                        required_device_name = "6C:E8:C6:75:A1:EA"
-                        required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Mock required MAC address
+                    # Display all available Bluetooth devices
+                    st.write("Available Bluetooth devices:")
+                    for device_name, mac_address in ble_signal.items():
+                        st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
 
-                        found_device = False
-                        for device_name, mac_address in ble_signal.items():
-                            if required_device_name in device_name or mac_address == required_mac_id:
-                                st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
-                                found_device = True
-                                break
+                    # Automatically check if the required Bluetooth device is in the list
+                    required_device_name = "6C:E8:C6:75:A1:EA"
+                    required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Mock required MAC address
 
-                        if found_device:
-                            # Save user login to session state
-                            st.session_state.logged_in = True
-                            st.session_state.user_id = user_id
-                            st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
+                    found_device = False
+                    for device_name, mac_address in ble_signal.items():
+                        if required_device_name in device_name or mac_address == required_mac_id:
+                            st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
+                            found_device = True
+                            break
 
-                            # Get the current period and mark attendance
-                            current_period = get_current_period()
-                            if current_period:
-                                st.success(f"Attendance for {current_period} is being marked automatically.")
-                                
-                                # Define period times for attendance marking
-                                period_times = {
-                                    "Period 1": ("09:30", "10:20"),
-                                    "Period 2": ("10:20", "11:10"),
-                                    "Period 3": ("11:10", "12:00"),
-                                    "Period 4": ("12:00", "12:50"),
-                                    "Period 5": ("12:58", "14:30"),
-                                    "Period 6": ("14:30", "15:20"),
-                                    "Period 7": ("15:20", "16:10")
-                                }
+                    if found_device:
+                        # Save user login to session state
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user_id
+                        st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
 
-                                # Initialize attendance data for all periods as False (Absent)
-                                attendance_data = {period: False for period in period_times.keys()}
-                                
-                                # Mark the current period as present (True)
-                                attendance_data[current_period] = True
-                                
-                                # Define the days array
-                                days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                                
-                                # Automatically set the current day from the system date
-                                current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
+                        # Get the current period and mark attendance
+                        current_period = get_current_period()
+                        if current_period:
+                            st.success(f"Attendance for {current_period} is being marked automatically.")
+                            
+                            # Define period times for attendance marking
+                            period_times = {
+                                "Period 1": ("09:30", "10:20"),
+                                "Period 2": ("10:20", "11:10"),
+                                "Period 3": ("11:10", "12:00"),
+                                "Period 4": ("12:00", "12:50"),
+                                "Period 5": ("12:58", "14:30"),
+                                "Period 6": ("14:30", "15:20"),
+                                "Period 7": ("15:20", "16:10")
+                            }
 
-                                # Display the day selector with the current day pre-selected
-                                selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
-                                
-                                # Check if attendance record already exists for the student on the same date and day
-                                cursor.execute(""" 
-                                    SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ? 
+                            # Initialize attendance data for all periods as False (Absent)
+                            attendance_data = {period: False for period in period_times.keys()}
+                            
+                            # Mark the current period as present (True)
+                            attendance_data[current_period] = True
+                            
+                            # Define the days array
+                            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                            
+                            # Automatically set the current day from the system date
+                            current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
+
+                            # Display the day selector with the current day pre-selected
+                            selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
+                            
+                            # Check if attendance record already exists for the student on the same date and day
+                            cursor.execute(""" 
+                                SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ? 
+                            """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
+                            existing_record = cursor.fetchone()
+
+                            if existing_record:
+                                # Update the attendance for the current period
+                                period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
+                                cursor.execute(f"""
+                                    UPDATE attendance 
+                                    SET {period_column} = 1 
+                                    WHERE student_id = ? AND date = ? AND day = ? 
                                 """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                                existing_record = cursor.fetchone()
-
-                                if existing_record:
-                                    # Update the attendance for the current period
-                                    period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
-                                    cursor.execute(f"""
-                                        UPDATE attendance 
-                                        SET {period_column} = 1 
-                                        WHERE student_id = ? AND date = ? AND day = ? 
-                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                                    conn.commit()
-                                    st.success(f"Attendance updated for {current_period} on {selected_day}!")
-                                else:
-                                    # Insert new attendance record
-                                    cursor.execute("""
-                                        INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
-                                    conn.commit()
-                                    st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
+                                conn.commit()
+                                st.success(f"Attendance updated for {current_period} on {selected_day}!")
                             else:
-                                st.warning("No active class period at the moment.")
+                                # Insert new attendance record
+                                cursor.execute("""
+                                    INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
+                                conn.commit()
+                                st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
                         else:
-                            st.error("Required Bluetooth device not found. Login failed.")
+                            st.warning("No active class period at the moment.")
                     else:
-                        st.error("No Bluetooth devices found.")
+                        st.error("Required Bluetooth device not found. Login failed.")
                 else:
-                    st.error("You must be in Kolkata to login.")
+                    st.error("No Bluetooth devices found.")
             else:
-                st.error("Device ID does not match.")
+                st.error("You must be in Kolkata to login.")
         else:
             st.error("Invalid user ID or password.")
 
