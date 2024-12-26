@@ -1,3 +1,5 @@
 streamlit
 geopy
 bleak
+dbus-fast
+pybluez
