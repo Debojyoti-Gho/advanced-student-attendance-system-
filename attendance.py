@@ -238,6 +238,8 @@ elif menu == "Student Login":
                     time.sleep(2)  # Simulate a delay for scanning
 
                     st.info("Bluetooth devices found. Listing all available devices...")
+
+                    st.info("the required Bluetooth device has been found, login succesfull")
                         
                     # Simulated available Bluetooth devices
                     simulated_ble_signal = {
