@@ -2,3 +2,4 @@ streamlit
 geopy
 bleak
 dbus-fast
+bluezdbus
