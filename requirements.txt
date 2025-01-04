@@ -1,3 +1,9 @@
 streamlit
 geopy
 bleak
+asyncio
+reportlab
+matplotlib
+uuid
+hashlib
+requests
