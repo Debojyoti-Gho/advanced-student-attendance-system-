@@ -5,5 +5,4 @@ asyncio
 reportlab
 matplotlib
 uuid
-hashlib
 requests
