@@ -5,11 +5,10 @@ reportlab
 matplotlib
 opencv-python
 face_recognition
-scipy
-torch
-torchvision
-scikit-learn
-requests
 uuid
 smtplib
-python == 3.11
+scipy==1.10.1
+torch==2.1.0
+torchvision==0.15.0
+scikit-learn==1.2.1
+requests==2.31.0
