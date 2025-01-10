@@ -11,5 +11,4 @@ torchvision
 scikit-learn
 requests
 uuid
-platform
 smtplib
