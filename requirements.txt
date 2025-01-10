@@ -6,7 +6,6 @@ matplotlib
 opencv-python
 face_recognition
 uuid
-dlib
 cmake
 scipy
 torch
