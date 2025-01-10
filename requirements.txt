@@ -1,3 +1,4 @@
+pip==24.3.1
 streamlit
 asyncio
 bleak
@@ -12,4 +13,3 @@ torch
 torchvision
 scikit-learn
 requests
-pip install --upgrade pip
