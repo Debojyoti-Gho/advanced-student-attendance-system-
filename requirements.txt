@@ -7,7 +7,7 @@ matplotlib
 opencv-python
 face_recognition
 uuid
-cmake
+dlib==19.22.0
 scipy
 torch
 torchvision
