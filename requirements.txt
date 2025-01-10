@@ -12,3 +12,4 @@ torch
 torchvision
 scikit-learn
 requests
+pip install --upgrade pip
