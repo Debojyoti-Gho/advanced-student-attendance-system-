@@ -15,9 +15,21 @@ import uuid
 import hashlib
 import platform
 import requests
+import cv2
+import face_recognition
+import numpy as np
+from scipy.spatial.distance import euclidean
+import time
+import torch
+from torchvision import transforms
+from sklearn.cluster import DBSCAN
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from typing import Optional
 
 # Database setup
-conn = sqlite3.connect("asas.db", check_same_thread=False)
+conn = sqlite3.connect("asasspecial.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # Create tables
@@ -32,7 +44,8 @@ CREATE TABLE IF NOT EXISTS students (
     enrollment_no TEXT,
     year TEXT,
     semester TEXT,
-    device_id TEXT
+    device_id TEXT,
+    student_face BLOB 
 )
 """)
 cursor.execute("""
@@ -46,6 +59,7 @@ CREATE TABLE IF NOT EXISTS attendance (
     student_id TEXT,
     date TEXT,
     day TEXT,
+    
     period_1 INTEGER,
     period_2 INTEGER,
     period_3 INTEGER,
@@ -64,7 +78,8 @@ CREATE TABLE IF NOT EXISTS admin_profile (
     department TEXT,
     designation TEXT,
     email TEXT,
-    phone TEXT
+    phone TEXT,
+    face_encoding BLOB
 )
 """)
 
@@ -77,7 +92,27 @@ CREATE TABLE IF NOT EXISTS semester_dates (
     total_holidays INTEGER,
     total_classes INTEGER,
     total_periods INTEGER
-);
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS disputes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id TEXT,
+    date TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'Pending'
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS timetable (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL, -- e.g., Monday, Tuesday
+    period TEXT NOT NULL, -- e.g., Period 1, Period 2
+    subject TEXT NOT NULL,
+    teacher TEXT NOT NULL
+);              
 """)
 # Commit the changes
 conn.commit()
@@ -105,6 +140,389 @@ sqlite3.register_converter("DATE", convert_date)
 sqlite3.register_converter("DATETIME", convert_datetime)
 
 # Helper functions
+
+def send_confirmation_email(admin_email, admin_name):
+    # SMTP Configuration
+    smtp_server = 'smtp-relay.brevo.com'
+    smtp_port = 587
+    smtp_user = '823c6b001@smtp-brevo.com'  # Replace with your SMTP username
+    smtp_password = '6tOJHT2F4x8ZGmMw'      # Replace with your SMTP password
+    from_email = 'debojyotighoshmain@gmail.com'  # Replace with your sending email address
+    
+    # Create the email content
+    subject = "Welcome to the Admin Portal!"
+
+    body = f"""
+    Dear {admin_name},
+
+    On behalf of the entire team, I am pleased to welcome you to the Admin Portal! We are thrilled to have you join our growing organization, where your role will be crucial in shaping our success.
+
+    Your profile has been successfully created, and we would like to provide you with some important details about your account, features available to you, and your next steps:
+
+    **Your Account Details:**
+    - **Admin ID:** {new_admin_id}
+    - **Name:** {new_name}
+    - **Department:** {new_department}
+    - **Designation:** {new_designation}
+    - **Email:** {new_email}
+    - **Phone:** {new_phone}
+
+    **Features You Can Explore:**
+    - **Profile Management:** Edit and manage your personal and professional details at any time.
+    - **Data Analysis:** Gain insights from data reports and analytics dashboards.
+    - **Report Generation:** Generate and share custom reports with other users.
+    - **User Permissions:** Manage access rights and permissions for different users in the system.
+
+    We believe that you will play a pivotal role in enhancing the experience for both administrators and users. Please take some time to familiarize yourself with the system, and if you have any questions or need assistance, do not hesitate to reach out to our support team.
+
+    **Getting Started:**
+    - Log in to the system using the credentials provided.
+    - Begin by exploring the "Dashboard" for a high-level overview of key performance indicators and system notifications.
+    - Customize your profile and update your contact preferences to stay informed about important updates.
+
+    We are excited to have you as part of our organization, and we are confident that your expertise and leadership will help drive success. We look forward to working together and supporting you in your journey with us.
+
+    Once again, welcome aboard!
+
+    Best regards,
+    The Admin Team
+    """
+
+    # Set up the MIME
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = admin_email
+    msg['Subject'] = subject
+
+    # Attach the body to the email
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Establish a connection to the SMTP server
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Upgrade to secure connection
+        server.login(smtp_user, smtp_password)
+        server.sendmail(from_email, admin_email, msg.as_string())
+        server.quit()  # Close the connection
+        st.success("Email sent successfully.")
+    except Exception as e:
+        st.error(f"Failed to send email. Error: {str(e)}")
+        
+# SMTP Configuration
+smtp_server = 'smtp-relay.brevo.com'
+smtp_port = 587
+smtp_user = '823c6b001@smtp-brevo.com'  # Replace with your SMTP username
+smtp_password = '6tOJHT2F4x8ZGmMw'      # Replace with your SMTP password
+from_email = 'debojyotighoshmain@gmail.com'  # Replace with your sending email address
+    
+# Function to calculate attendance percentage for each student
+def get_low_attendance_students(threshold=75):
+    # Fetch all students
+    cursor.execute("SELECT user_id, name, email FROM students")
+    all_students = cursor.fetchall()
+
+    low_attendance = []
+
+    for student in all_students:
+        user_id, name, email = student
+
+        # Fetch the student's year and semester
+        cursor.execute("""
+            SELECT year, semester FROM students WHERE user_id = ?
+        """, (user_id,))
+        student_semester = cursor.fetchone()
+
+        if student_semester:
+            year, semester = student_semester
+
+            # Fetch total_classes and total_periods from semester_dates table
+            cursor.execute("""
+                SELECT total_classes, total_periods
+                FROM semester_dates 
+                WHERE year = ? AND semester = ?
+            """, (year, semester))
+            semester_details = cursor.fetchone()
+
+            if semester_details:
+                total_classes_in_semester, total_periods_in_semester = semester_details
+
+                # Fetch the student's attendance records
+                cursor.execute("SELECT * FROM attendance WHERE student_id = ?", (user_id,))
+                attendance_records = cursor.fetchall()
+
+                if attendance_records:
+                    # Calculate total periods attended
+                    total_present = sum(
+                    sum(1 if record[i] == 1 else 0 for i in range(3, 10))  # Sum the periods attended (1 for present, 0 for absent)
+                    for record in attendance_records
+                )
+
+
+                    # Calculate attendance percentage
+                    if total_periods_in_semester > 0:  # Avoid division by zero
+                        attendance_percentage = (total_present / total_periods_in_semester) * 100
+                        
+                        # Add to low attendance list if below the threshold
+                        if attendance_percentage < threshold:
+                            low_attendance.append((user_id, name, email, attendance_percentage))
+
+    return low_attendance
+
+
+def send_email(student_email, student_name, attendance_percentage):
+
+    # Email Content
+    subject = f"Attendance Alert - Immediate Attention Required"
+    body = f"""
+    Dear {student_name},
+
+    This is to inform you that your attendance is currently at {attendance_percentage:.2f}%, 
+    which is below the minimum required threshold of 75%.
+
+    You are hereby advised to attend more classes and meet the required attendance criteria 
+    to avoid being debarred from examinations or other academic activities.
+
+    Regards,
+    Admin Team
+    Your Institution Name
+    """
+
+    try:
+        # Create Email Message
+        msg = MIMEMultipart()
+        msg['From'] = from_email
+        msg['To'] = student_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Connect to SMTP Server
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  # Start TLS Encryption
+            server.login(smtp_user, smtp_password)  # Login with SMTP credentials
+            server.sendmail(from_email, student_email, msg.as_string())  # Send email
+
+        st.success(f"Email successfully sent to {student_name} ({student_email}).")
+    except smtplib.SMTPAuthenticationError:
+        st.error(f"Failed to authenticate with SMTP server. Check your username and password.")
+    except Exception as e:
+        st.error(f"Failed to send email to {student_name} ({student_email}). Error: {str(e)}")
+
+def capture_and_detect_faces():
+    cap = cv2.VideoCapture(0)  # Open webcam
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Convert the frame from BGR to RGB
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Detect faces in the image
+        face_locations = face_recognition.face_locations(rgb_frame)
+
+        if len(face_locations) > 0:
+            print(f"Found {len(face_locations)} face(s).")
+            # Get face encodings for each face in the frame
+            try:
+                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                return face_encodings, face_locations
+            except Exception as e:
+                print(f"Error generating face encodings: {str(e)}")
+                return None, None
+        else:
+            print("No faces found.")
+            return None, None
+
+
+# Function to cluster detected faces into distinct people
+def cluster_faces(faces_encodings, eps=0.6, min_samples=2):
+    """
+    Cluster the detected faces to group similar ones into the same person.
+    Uses DBSCAN clustering to automatically detect the number of distinct people.
+    Returns the number of clusters and the cluster labels.
+    """
+    if len(faces_encodings) == 0:
+        return 0, []
+
+    # Use DBSCAN clustering
+    db = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
+    cluster_labels = db.fit_predict(faces_encodings)
+
+    # Count distinct people (clusters)
+    num_people = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)  # -1 is noise
+
+    return num_people, cluster_labels
+
+
+def match_faces_with_database(captured_faces):
+    """
+    Match captured face encodings with the ones stored in the database.
+    Display matched user information if a match is found.
+    """
+    # Query all stored face encodings and user information from the database
+    cursor.execute("SELECT user_id, name, student_face FROM students")
+    students = cursor.fetchall()
+
+    matched_students = []
+
+    # For each captured face, compare with database entries
+    for captured_face in captured_faces:
+        for student in students:
+            user_id, name, stored_face_encoding = student
+            
+            # If stored_face_encoding exists, attempt to process it
+            if stored_face_encoding:
+                try:
+                    # Convert the stored face encoding from BLOB (binary data) to numpy array
+                    stored_face_encoding = np.frombuffer(stored_face_encoding, dtype=np.float64)
+
+                    # Compare the captured face with the stored face encoding
+                    matches = face_recognition.compare_faces([stored_face_encoding], captured_face)
+
+                    if matches[0]:
+                        matched_students.append((user_id, name))
+                        break  # Stop after the first match for this face
+
+                except Exception as e:
+                    # Handle any exception that occurs in the try block
+                    print(f"An error occurred while comparing faces: {str(e)}")
+            else:
+                print(f"No face encoding found for student {name}. Skipping match.")
+
+    return matched_students
+
+# Load the pre-trained MiDaS model for depth estimation
+model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
+model.eval()
+
+def capture_face():
+    st.write("Turn on your camera to capture the face.")
+    cap = cv2.VideoCapture(0)  # Open the camera
+    
+    # Check if the camera is successfully opened
+    if not cap.isOpened():
+        st.error("Could not open camera.")
+        return None
+
+    st_frame = st.image([])
+
+    captured_face = None  # Variable to store the captured face
+
+    while True:
+        ret, frame = cap.read()
+        
+        # Check if frame was successfully captured
+        if not ret or frame is None or frame.size == 0:
+            st.error("Failed to capture frame from the camera.")
+            break
+        
+        st_frame.image(frame, channels="BGR")
+
+        # Convert to RGB for face recognition
+        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_image)
+        
+        # If at least one face is detected, capture the first one
+        if len(face_locations) > 0:
+            captured_face = frame
+            st.write("Face captured successfully!")
+            break  # Exit the loop once a face is captured
+
+    cap.release()  # Release the camera
+
+    if captured_face is None:
+        st.error("No valid face detected. Try again.")
+        return None
+
+    # Check if captured face is valid before proceeding with depth estimation
+    if captured_face is None or captured_face.size == 0:
+        st.error("Captured face is empty or invalid.")
+        return None
+
+    # Depth estimation: Convert the captured frame to RGB for MiDaS model
+    rgb_frame = cv2.cvtColor(captured_face, cv2.COLOR_BGR2RGB)
+
+    # Define the transformation (resize and normalization)
+    transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize(384),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    # Apply the transformations
+    input_tensor = transform(rgb_frame).unsqueeze(0)
+
+    # Predict the depth
+    with torch.no_grad():
+        depth_map = model(input_tensor)
+
+    # Normalize the depth map for display
+    depth_map = depth_map.squeeze().cpu().numpy()
+    depth_map = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
+    depth_map = np.uint8(depth_map)
+
+    # Show depth map for debugging (optional)
+    st.image(depth_map, channels="GRAY", caption="Depth Map")
+
+    # Check if the depth map has sufficient variation (meaningful 3D object)
+    depth_variation = np.std(depth_map)
+
+    # Enhance the check to account for larger regions
+    mean_depth = np.mean(depth_map)
+    depth_threshold = 80  # Adjust threshold for a more reliable check
+
+    # Check if depth variation and mean depth are consistent with 3D face
+    if depth_variation < depth_threshold or mean_depth < 20:
+        st.error("Depth variation too low or invalid depth detected! This might be a 2D image.")
+        captured_face = None
+        return None
+
+    return captured_face  # Return the captured frame if everything is valid
+
+# Preprocess face image to get encoding
+def get_face_encoding(image):
+    # Check if the image is None or empty
+    if image is None or image.size == 0:
+        st.error("Failed to capture face image. The image is empty.")
+        return None
+    
+    # Convert the image to RGB (required by face_recognition)
+    try:
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    except cv2.error as e:
+        st.error(f"OpenCV error during color conversion: {e}")
+        return None
+    
+    # Detect face locations
+    face_locations = face_recognition.face_locations(rgb_image)
+    
+    if len(face_locations) == 0:
+        st.error("No face detected. Try again!")
+        return None
+    
+    # Get face encodings for the detected faces
+    face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+    
+    if len(face_encodings) > 0:
+        return face_encodings[0]  # Return the encoding of the first detected face
+    else:
+        st.error("No face encoding found.")
+        return None
+    
+def authenticate_with_face(captured_encoding, stored_encoding, threshold=0.6):
+    # Calculate the Euclidean distance between the two encodings
+    distance = euclidean(captured_encoding, stored_encoding)
+
+    # Log the distance for debugging purposes
+    st.write(f"Distance between captured and stored encoding: {distance}")
+
+    # Compare the distance with a threshold
+    if distance < threshold:
+        return True
+    return False
+
 def get_device_uuid():
     """
     Generate a unique mobile device identifier using mobile-specific attributes like
@@ -273,9 +691,9 @@ def get_current_period():
         "Period 2": ("10:20", "11:10"),
         "Period 3": ("11:10", "12:00"),
         "Period 4": ("12:00", "12:50"),
-        "Period 5": ("13:40", "14:30"),
+        "Period 5": ("12:40", "14:30"),
         "Period 6": ("14:30", "15:20"),
-        "Period 7": ("15:20", "16:10")
+        "Period 7": ("15:20", "21:10")
     }
 
     current_time = datetime.now().time()
@@ -299,6 +717,7 @@ def get_current_period():
 
 # Streamlit UI
 st.title("ADVANCED STUDENT ATTENDANCE SYSTEM")
+st.subheader("developed by Debojyoti Ghosh")
 
 menu = st.sidebar.selectbox("Menu", ["Home", "Register", "Student Login", "Admin Login"])
 
@@ -309,6 +728,8 @@ if menu == "Home":
 
 elif menu == "Register":
     st.header("Student Registration")
+    
+    # Student details input
     name = st.text_input("Name")
     roll = st.text_input("Roll Number")
     section = st.text_input("Section")
@@ -316,37 +737,56 @@ elif menu == "Register":
     enrollment_no = st.text_input("Enrollment Number")
     year = st.text_input("Year")
     semester = st.text_input("Semester")
-
     user_id = st.text_input("User ID")
     password = st.text_input("Password", type="password")
-
+    
     # Fetch the device ID (UUID based)
-    device_id = get_device_uuid()  # Fetch UUID instead of IP
+    device_id = get_device_uuid()  # Function defined earlier
 
     if not device_id:
         st.error("Could not fetch device ID, registration cannot proceed.")
     
+    # Face capturing and encoding
     if st.button("Register"):
-        if device_id:
-            # Check if the device has already registered
-            cursor.execute("SELECT * FROM students WHERE device_id = ?", (device_id,))
-            if cursor.fetchone():
-                st.error("This device has already registered. Only one registration is allowed per device.")
+        # Capture face automatically as part of the registration process
+        face_image = capture_face()  # Capture face using the defined function
+
+        if face_image is not None:
+            face_encoding = get_face_encoding(face_image)  # Get face encoding
+            
+            if face_encoding is not None:
+                # Proceed with registration if face encoding is successful
+                if device_id:
+                    # Check if the device is already registered
+                    cursor.execute("SELECT * FROM students WHERE device_id = ?", (device_id,))
+                    if cursor.fetchone():
+                        st.error("This device has already registered. Only one registration is allowed per device.")
+                    else:
+                        # Check if the user ID already exists
+                        cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
+                        if cursor.fetchone():
+                            st.error("User ID already exists.")
+                        else:
+                            # Insert the new student registration
+                            cursor.execute("""
+                            INSERT INTO students (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, student_face)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, face_encoding.tobytes()))
+                            conn.commit()
+                            
+                            # Confirm that the face data has been inserted
+                            cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
+                            student_data = cursor.fetchone()
+                            if student_data:
+                                st.success(f"Registration successful! You are registered with the device ID: {device_id}")
+                                st.success("Face data has been successfully stored.")
+                            else:
+                                st.error("Failed to store face data.")
             else:
-                # Check if the user ID already exists
-                cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
-                if cursor.fetchone():
-                    st.error("User ID already exists.")
-                else:
-                    # Insert the new student registration
-                    cursor.execute("""
-                    INSERT INTO students (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id))
-                    conn.commit()
-                    st.success(f"Registration successful! You are registered with the device ID: {device_id}")
+                st.error("Failed to encode the captured face.")
         else:
-            st.error("Device ID not found. Cannot register without a valid device.")
+            st.error("Failed to capture face. Please try again.")
+
 
 elif menu == "Student Login":
     st.header("Student Login")
@@ -363,13 +803,17 @@ elif menu == "Student Login":
         cursor.execute("SELECT * FROM students WHERE user_id = ? AND password = ?", (user_id, password))
         user = cursor.fetchone()
         if user:
-            if user[-1] == device_id:  # Match device_id from IP address
+            if user[9] == device_id:  # Match device_id from IP address
                 location = get_precise_location()
                 st.write(f"Your current location is: {location}")
                 if location and "Kolkata" in location:
+                    time.sleep(2)
                     st.success("user ID and password verification succesfull!")
+                    time.sleep(2)
                     st.success("you have passed the location check and your location has been verified")
+                    time.sleep(2)
                     st.success(f"your registered device has been verified successfully")
+                    time.sleep(2)
                     st.success(f"Login successful! Welcome, {user[2]}")
                     
                     # Check for Bluetooth signal during login session
@@ -384,11 +828,11 @@ elif menu == "Student Login":
                         # Display all available Bluetooth devices
                         st.write("Available Bluetooth devices:")
                         for device_name, mac_address in ble_signal.items():
-                            st.write(f"Device Name: {device_name}, MAC Address: {mac_address}")
+                            st.write(f"Device Name: {mac_address}, MAC Address: {device_name}")
 
                         # Automatically check if the required Bluetooth device is in the list
-                        required_device_name = "6C:E8:C6:75:A1:EA"
-                        required_mac_id = "JR_JioSTB-RPCSBJG00013449"  # Replace with the actual MAC address if known
+                        required_device_name = "76:6B:E1:0F:92:09"
+                        required_mac_id = "INSTITUTE BLE VERIFY SIGNA"  # Replace with the actual MAC address if known
 
                         found_device = False
                         for device_name, mac_address in ble_signal.items():
@@ -403,69 +847,87 @@ elif menu == "Student Login":
                             st.session_state.user_id = user_id
                             st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
 
-                            # Get the current period and mark attendance
+                            # Define constant for period times
+                            PERIOD_TIMES = {
+                                "Period 1": ("09:30", "10:20"),
+                                "Period 2": ("10:20", "11:10"),
+                                "Period 3": ("11:10", "12:00"),
+                                "Period 4": ("12:00", "12:50"),
+                                "Period 5": ("12:50", "14:30"),
+                                "Period 6": ("14:30", "15:20"),
+                                "Period 7": ("15:20", "21:10")
+                            }
+
+                            # Function to get the current period based on time
+                            def get_current_period() -> Optional[str]:
+                                now = datetime.now().strftime("%H:%M")  # Current time in HH:MM format
+                                for period, (start, end) in PERIOD_TIMES.items():
+                                    if start <= now <= end:
+                                        return period
+                                return None
+
+                            # Attendance Marking Logic
                             current_period = get_current_period()
+
                             if current_period:
-                                st.success(f"Attendance for {current_period} is being marked automatically.")
-                                
-                                # Define period times for attendance marking
-                                period_times = {
-                                    "Period 1": ("09:30", "10:20"),
-                                    "Period 2": ("10:20", "11:10"),
-                                    "Period 3": ("11:10", "12:00"),
-                                    "Period 4": ("12:00", "12:50"),
-                                    "Period 5": ("13:40", "14:30"),
-                                    "Period 6": ("14:30", "15:20"),
-                                    "Period 7": ("15:20", "16:10")
-                                }
+                                st.success(f"Attendance for {current_period} is being marked automatically. Waiting for confirmation from the server!")
 
-                                # Initialize attendance data for all periods as False (Absent)
-                                attendance_data = {period: False for period in period_times.keys()}
-                                
-                                # Mark the current period as present (True)
-                                attendance_data[current_period] = True
-                                
-                                # Define the days array
-                                days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                                
-                                # Automatically set the current day from the system date
-                                current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
+                                current_day = datetime.now().strftime("%A")  # Get current weekday name
 
-                                # Display the day selector with the current day pre-selected
-                                selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
-                                
-                                # Check if attendance record already exists for the student on the same date and day
-                                cursor.execute("""
-                                    SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ?
-                                """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                                existing_record = cursor.fetchone()
-
-                                if existing_record:
-                                    # Update the attendance for the current period
-                                    period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
-                                    cursor.execute(f"""
-                                        UPDATE attendance 
-                                        SET {period_column} = 1
-                                        WHERE student_id = ? AND date = ? AND day = ?
-                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
-                                    conn.commit()
-                                    st.success(f"Attendance updated for {current_period} on {selected_day}!")
-                                else:
-                                    # Insert new attendance record
+                                try:
+                                    # Fetch timetable details
                                     cursor.execute("""
-                                        INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
-                                    conn.commit()
-                                    st.success(f"Attendance for {current_period} marked successfully for {selected_day}!")
+                                        SELECT subject, teacher FROM timetable 
+                                        WHERE day = ? AND period = ?
+                                    """, (current_day, current_period))
+                                    period_details = cursor.fetchone()
+
+                                    if period_details:
+                                        subject, teacher = period_details
+                                        st.info(f"Subject: {subject} | Teacher: {teacher}")
+
+                                        # Check for existing attendance record
+                                        cursor.execute("""
+                                            SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ?
+                                        """, (user_id, datetime.now().strftime('%Y-%m-%d'), current_day))
+                                        existing_record = cursor.fetchone()
+
+                                        period_column = f"period_{list(PERIOD_TIMES.keys()).index(current_period) + 1}"
+
+                                        if existing_record:
+                                            # Update attendance
+                                            cursor.execute(f"""
+                                                UPDATE attendance 
+                                                SET {period_column} = 1, subject = ?, teacher = ?
+                                                WHERE student_id = ? AND date = ? AND day = ?
+                                            """, (subject, teacher, user_id, datetime.now().strftime('%Y-%m-%d'), current_day))
+                                            conn.commit()
+                                            st.success(f"Attendance updated for {current_period} ({subject}) by {teacher} on {current_day}!")
+                                        else:
+                                            # Prepare attendance data
+                                            attendance_data = {period: 0 for period in PERIOD_TIMES.keys()}
+                                            attendance_data[current_period] = 1
+
+                                            # Insert new attendance record
+                                            cursor.execute("""
+                                                INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7, subject, teacher)
+                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            """, (user_id, datetime.now().strftime('%Y-%m-%d'), current_day, *attendance_data.values(), subject, teacher))
+                                            conn.commit()
+                                            st.success(f"Attendance for {current_period} ({subject}) by {teacher} marked successfully for {current_day}!")
+                                    else:
+                                        st.error(f"No timetable entry found for {current_period} on {current_day}.")
+                                except Exception as e:
+                                    st.error(f"An error occurred: {e}")
                             else:
                                 st.warning("No active class period at the moment.")
+
                         else:
                             st.error("Required Bluetooth device not found. Login failed.")
                     else:
                         st.error("No Bluetooth devices found.")
                 else:
-                    st.error("You must be in institute of Engineering and managment to login.")
+                    st.error("You must be in Kolkata to login.")
             else:
                 st.error("Device ID does not match.")
         else:
@@ -479,37 +941,79 @@ elif menu == "Student Login":
         current_year = datetime.now().year
         years = [str(year) for year in range(current_year, current_year - 10, -1)]
 
-        # Select Year, Month, and Day of the Week
+        # Select Year, Month, Day of the Week, and Date
         year = st.selectbox("Select Year", years)
         month = st.selectbox("Select Month", [
             "January", "February", "March", "April", "May", "June", 
             "July", "August", "September", "October", "November", "December"
         ])
-        day_of_week = st.selectbox("Select Day of the Week", [
-            "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
+        day_of_week = st.selectbox("Select Day of the Week (Optional)", [
+            "Any", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
         ])
+        include_date = st.checkbox("Filter by Specific Date?")
+        selected_date = None
+
+        # Allow date selection if checkbox is enabled
+        if include_date:
+            selected_date = st.date_input("Select Date")
 
         # Convert month to numeric value for filtering
         month_num = datetime.strptime(month, "%B").month
 
         # Search Button
         if st.button("Search Attendance"):
-            cursor.execute("""
+            # Build SQL query dynamically based on user input
+            query = """
                 SELECT * FROM attendance 
                 WHERE student_id = ? 
                 AND strftime('%Y', date) = ? 
-                AND strftime('%m', date) = ? 
-                AND day = ? 
-            """, (st.session_state.user_id, year, f"{month_num:02d}", day_of_week))
+                AND strftime('%m', date) = ?
+            """
+            params = [st.session_state.user_id, year, f"{month_num:02d}"]
+
+            # Add day of the week filter if selected
+            if day_of_week != "Any":
+                query += " AND day = ?"
+                params.append(day_of_week)
+            
+            # Add specific date filter if enabled
+            if include_date and selected_date:
+                query += " AND date = ?"
+                params.append(selected_date.strftime('%Y-%m-%d'))
+
+            # Execute the query
+            cursor.execute(query, tuple(params))
             attendance_records = cursor.fetchall()
 
+            # Display attendance records or a message if none are found
             if attendance_records:
+                st.write("### Attendance Records Found:")
                 for record in attendance_records:
                     st.write(f"Date: {record[1]}, Day: {record[2]}")
                     for i in range(3, 10):  # Periods are in columns 3 to 9
                         st.write(f"Period {i-2}: {'Present' if record[i] == 1 else 'Absent'}")
             else:
                 st.write("No attendance records found for the selected filters.")
+                
+        # Add dispute submission section
+        st.subheader("Raise Attendance Dispute")
+        st.info("If you feel there's a discrepancy in your attendance, please submit a dispute.")
+
+        # Dispute Form
+        dispute_reason = st.text_area("Describe the issue")
+        submit_dispute = st.button("Submit Dispute")
+
+        if submit_dispute:
+            if dispute_reason.strip():
+                # Insert dispute into the database
+                cursor.execute("""
+                    INSERT INTO disputes (student_id, date, reason)
+                    VALUES (?, ?, ?)
+                """, (user_id, datetime.now().strftime('%Y-%m-%d'), dispute_reason))
+                conn.commit()
+                st.success("Your dispute has been submitted successfully!")
+            else:
+                st.error("Please provide a reason for the dispute.")
 
         # Logout button
         if st.button("Logout"):
@@ -519,7 +1023,8 @@ elif menu == "Student Login":
             st.session_state.attendance_saved = False  # Reset attendance saved flag
             st.rerun()
 
-elif menu == "Admin Login":
+# Admin Login Flow with Face Recognition
+if menu == "Admin Login":
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False  # Initially, no one is logged in
     
@@ -528,16 +1033,25 @@ elif menu == "Admin Login":
 
     if st.session_state.logged_in:
         # Admin is logged in, show the dashboard
-        st.success("Admin login successful!")
+        st.warning("id and password verification in progress!")
+        time.sleep(2)
+        st.warning("face id verification in progress!")
 
-       # Admin Profile Section
+        # Admin Profile Section
         if st.session_state.admin_id:  # Check if admin_id exists before querying the database
             try:
                 cursor.execute("SELECT * FROM admin_profile WHERE admin_id = ?", (st.session_state.admin_id,))
                 profile = cursor.fetchone()
-
+                
                 if profile:
-                    st.subheader("Admin Profile")
+                    time.sleep(5)
+                    st.info("the id and password verification is successfull!")
+                    time.sleep(2)
+                    st.info("the face id verification is successfull!")
+                    time.sleep(2)
+                    st.success("Admin login successful!")
+                    st.success(f"welcome back to your dashboard, {profile[1]}!!")
+                    st.header("Admin Profile")
                     st.write(f"Name: {profile[1]}")
                     st.write(f"Department: {profile[2]}")
                     st.write(f"Designation: {profile[3]}")
@@ -552,24 +1066,46 @@ elif menu == "Admin Login":
                     new_designation = st.text_input("New Designation", profile[3])
                     new_email = st.text_input("New Email", profile[4])
                     new_phone = st.text_input("New Phone", profile[5])
-
+                    st.error("please note : for safety admind id and password needs to be changed together and once changed the profile setup has to be done again!!")
                     # Option to update Admin ID and Password
                     new_admin_id = st.text_input("New Admin ID", st.session_state.admin_id)
                     new_password = st.text_input("New Password", type="password")
+
+                    # Option to update face data
+                    st.write("---")
+                    st.subheader("Update Face Data")
+                    if st.button("Capture New Face"):
+                        captured_face = capture_face()  # Function to capture face image from webcam
+                        st.image(captured_face, caption="Captured New Face")
+                        new_face_encoding = get_face_encoding(captured_face)  # Function to get face encoding
+
+                        if new_face_encoding is None:
+                            st.error("Face capture failed. Please try again.")
+                        else:
+                            st.success("New face data captured successfully!")
 
                     if st.button("Save Changes"):
                         # Check if new admin ID already exists
                         cursor.execute("SELECT * FROM admin WHERE admin_id = ?", (new_admin_id,))
                         existing_admin = cursor.fetchone()
+
                         if existing_admin and new_admin_id != st.session_state.admin_id:
                             st.error("Admin ID already exists. Please choose a different one.")
                         else:
                             # Update admin profile
                             cursor.execute(""" 
                                 UPDATE admin_profile 
-                                SET name = ?, department = ?, designation = ?, email = ?, phone = ? 
+                                SET name = ?, department = ?, designation = ?, email = ?, phone = ?, face_encoding = ? 
                                 WHERE admin_id = ? 
-                            """, (new_name, new_department, new_designation, new_email, new_phone, st.session_state.admin_id))
+                            """, (
+                                new_name,
+                                new_department,
+                                new_designation,
+                                new_email,
+                                new_phone,
+                                sqlite3.Binary(new_face_encoding.tobytes()) if 'new_face_encoding' in locals() else profile[6],  # Update face encoding only if captured
+                                st.session_state.admin_id,
+                            ))
 
                             # Update admin login credentials (admin ID and password)
                             if new_admin_id != st.session_state.admin_id:
@@ -581,7 +1117,7 @@ elif menu == "Admin Login":
                                 st.session_state.admin_id = new_admin_id  # Update the session ID
 
                             conn.commit()
-                            st.success("Profile and login credentials updated successfully!")
+                            st.success("Profile, login credentials, and face data updated successfully!")
 
                 else:
                     st.error("Admin profile not found. Please complete your profile setup.")
@@ -597,25 +1133,38 @@ elif menu == "Admin Login":
                     new_admin_id = st.text_input("Admin ID")
                     new_password = st.text_input("Password", type="password")
 
-                    if st.button("Save Profile"):
-                        # Check if admin ID already exists
-                        cursor.execute("SELECT * FROM admin WHERE admin_id = ?", (new_admin_id,))
-                        existing_admin = cursor.fetchone()
-                        if existing_admin:
-                            st.error("Admin ID already exists. Please choose a different one.")
+                    # Capture face image and encode during profile creation
+                    if st.button("Capture Face"):
+                        captured_face = capture_face()  # Capture face from webcam
+                        st.image(captured_face, caption="Captured Face for Profile")
+                        captured_encoding = get_face_encoding(captured_face)  # Get encoding of captured face
+                        if captured_encoding is None:
+                            st.error("Face capture failed. Please try again.")
                         else:
-                            cursor.execute(""" 
-                                INSERT INTO admin_profile (admin_id, name, department, designation, email, phone) 
-                                VALUES (?, ?, ?, ?, ?, ?) 
-                            """, (new_admin_id, new_name, new_department, new_designation, new_email, new_phone))
+                            # Save profile and face encoding to the database
+                            if new_name and new_department and new_designation and new_email and new_phone and new_admin_id and new_password:
+                                cursor.execute("SELECT * FROM admin WHERE admin_id = ?", (new_admin_id,))
+                                existing_admin = cursor.fetchone()
+                                if existing_admin:
+                                    st.error("Admin ID already exists. Please choose a different one.")
+                                else:
+                                    # Save face encoding as BLOB in the database
+                                    cursor.execute(""" 
+                                        INSERT INTO admin_profile (admin_id, name, department, designation, email, phone, face_encoding) 
+                                        VALUES (?, ?, ?, ?, ?, ?, ?) 
+                                    """, (new_admin_id, new_name, new_department, new_designation, new_email, new_phone, sqlite3.Binary(captured_encoding.tobytes())))
 
-                            cursor.execute(""" 
-                                INSERT INTO admin (admin_id, password) 
-                                VALUES (?, ?) 
-                            """, (new_admin_id, new_password))
+                                    cursor.execute(""" 
+                                        INSERT INTO admin (admin_id, password) 
+                                        VALUES (?, ?) 
+                                    """, (new_admin_id, new_password))
 
-                            conn.commit()
-                            st.success("Profile and login credentials created successfully!")
+                                    conn.commit()
+                                    st.success("Profile and login credentials created successfully!")
+                                    # Send the confirmation email
+                                    send_confirmation_email(new_email, new_name)
+                            else:
+                                st.error("Please fill all fields.")
 
             except sqlite3.OperationalError as e:
                 st.error(f"Database error: {e}")
@@ -623,9 +1172,6 @@ elif menu == "Admin Login":
                 st.error(f"Integrity error: {e}")
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
-
-        else:
-            st.error("Admin is not logged in. Please log in to view the dashboard.")
 
 
         # Advanced Search Section for Registered Students
@@ -641,10 +1187,10 @@ elif menu == "Admin Login":
         search_by_month = st.selectbox("Search by Month", ["All", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"])
         search_by_year = st.selectbox("Search by Year (Attendance)", ["All", "2024", "2023", "2022", "2021", "2020"])
         search_by_day = st.selectbox("Search by Day", ["All", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
-        search_by_date = st.date_input("Search by Date")
+        search_by_date = st.date_input("Search by Date", value=None)
 
         if st.button("Search"):
-            # Build SQL query based on user inputs
+            # Start building SQL query
             query = """
                 SELECT DISTINCT students.* 
                 FROM students
@@ -653,6 +1199,7 @@ elif menu == "Admin Login":
             """
             params = []
 
+            # Apply filters based on input
             if student_name:
                 query += " AND students.name LIKE ?"
                 params.append(f"%{student_name}%")
@@ -662,14 +1209,13 @@ elif menu == "Admin Login":
                 params.append(student_id)
 
             if student_department:
-                query += " AND students.department LIKE ?"
+                query += " AND students.section LIKE ?"
                 params.append(f"%{student_department}%")
 
             if student_year and student_year != "All":
                 query += " AND students.year = ?"
                 params.append(student_year)
 
-            # Add date-related filters to the query
             if search_by_month != "All":
                 query += " AND strftime('%m', attendance.date) = ?"
                 month_number = {
@@ -692,14 +1238,14 @@ elif menu == "Admin Login":
                 params.append(day_number)
 
             if search_by_date:
-                query += " OR attendance.date = ?"
+                query += " AND attendance.date = ?"
                 params.append(search_by_date.strftime('%Y-%m-%d'))
-            
+
             # Execute the query based on the applied filters
             cursor.execute(query, params)
             filtered_students = cursor.fetchall()
 
-            # Display filtered students and their details automatically
+            # Display filtered students and their details
             st.subheader("Filtered Students")
             if filtered_students:
                 for student in filtered_students:
@@ -707,43 +1253,39 @@ elif menu == "Admin Login":
                     student_name = student[2]
                     st.write(f"Student ID: {student_id}, Name: {student_name}")
 
-                    # Display student's full details directly (no button required)
-                    cursor.execute("SELECT * FROM students WHERE user_id = ?", (student_id,))
-                    student_data = cursor.fetchone()
-                    if student_data:
-                        st.write(f"User ID: {student_data[0]}")
-                        st.write(f"Name: {student_data[2]}")
-                        st.write(f"Roll: {student_data[3]}")
-                        st.write(f"Section: {student_data[4]}")
-                        st.write(f"Email: {student_data[5]}")
-                        st.write(f"Enrollment No: {student_data[6]}")
-                        st.write(f"Year: {student_data[7]}")
-                        st.write(f"Semester: {student_data[8]}")
-                        st.write(f"Device ID: {student_data[9]}")
+                    # Display student's full details
+                    st.write(f"User ID: {student[0]}")
+                    st.write(f"Name: {student[2]}")
+                    st.write(f"Roll: {student[3]}")
+                    st.write(f"Section: {student[4]}")
+                    st.write(f"Email: {student[5]}")
+                    st.write(f"Enrollment No: {student[6]}")
+                    st.write(f"Year: {student[7]}")
+                    st.write(f"Semester: {student[8]}")
+                    st.write(f"Device ID: {student[9]}")
 
-                        # Show student's attendance report
-                        st.subheader(f"Attendance Report for {student_data[2]}")
-                        cursor.execute(""" 
-                            SELECT * FROM attendance WHERE student_id = ? 
-                        """, (student_id,))
-                        attendance_records = cursor.fetchall()
-                        if attendance_records:
-                            total_classes = len(attendance_records)
-                            total_present = sum([sum(record[3:]) for record in attendance_records])  # Sum of all periods attended
-                            percentage = (total_present / (total_classes * 7)) * 100  # Assuming 7 periods each day
-                            st.write(f"Total Classes: {total_classes}")
-                            st.write(f"Total Present: {total_present}")
-                            st.write(f"Attendance Percentage: {percentage:.2f}%")
+                    # Show student's attendance report
+                    st.subheader(f"Attendance Report for {student[2]}")
+                    cursor.execute("SELECT * FROM attendance WHERE student_id = ?", (student_id,))
+                    attendance_records = cursor.fetchall()
+                    if attendance_records:
+                        total_classes = len(attendance_records)
+                        total_present = sum([sum(record[3:]) for record in attendance_records])  # Sum of all periods attended
+                        percentage = (total_present / (total_classes * 7)) * 100  # Assuming 7 periods each day
+                        st.write(f"Total Classes: {total_classes}")
+                        st.write(f"Total Present: {total_present}")
+                        st.write(f"Attendance Percentage: {percentage:.2f}%")
 
-                            # Detailed attendance for each day
-                            for record in attendance_records:
-                                st.write(f"Date: {record[1]}, Day: {record[2]}")
-                                for i in range(3, 10):  # Periods are in columns 3 to 9
-                                    st.write(f"Period {i-2}: {'Present' if record[i] == 1 else 'Absent'}")
-                        else:
-                            st.write("No attendance records found for this student.")
+                        # Detailed attendance for each day
+                        for record in attendance_records:
+                            st.write(f"Date: {record[1]}, Day: {record[2]}")
+                            for i in range(3, 10):  # Periods are in columns 3 to 9
+                                st.write(f"Period {i-2}: {'Present' if record[i] == 1 else 'Absent'}")
+                    else:
+                        st.write("No attendance records found for this student.")
             else:
                 st.write("No students found based on the search criteria.")
+
             
             
         # Section to View All Registered Students and Attendance Analysis
@@ -769,6 +1311,18 @@ elif menu == "Admin Login":
                     st.write(f"Year: {student[7]}")
                     st.write(f"Semester: {student[8]}")
 
+                    # Fetch the student's face encoding from the database
+                    face_encoding_blob = student[10]  # Assuming 'student_face' is at index 10
+
+                    if face_encoding_blob:
+                        # Show a message indicating that face data is available
+                        st.write("Face data is available for this student.")
+                        
+                        # Optional: Display the raw face encoding as text (for debugging purposes)
+                        st.write(f"Raw Face Encoding (first 10 values): {list(face_encoding_blob[:10])}")
+                    else:
+                        st.write("No face data available for this student.")
+                        
                     # Attendance Analysis for the student
                     st.subheader(f"Attendance Analysis for {student_name}")
 
@@ -798,7 +1352,12 @@ elif menu == "Admin Login":
 
                             if attendance_records:
                                 total_days = len(attendance_records)  # Number of days attended
-                                total_present = sum(sum(record[3:]) for record in attendance_records)  # Sum of all periods attended
+                                
+                                # Calculate total periods attended, treating None as 0 (absent)
+                                total_present = sum(
+                                    sum(1 if record[i] == 1 else 0 for i in range(3, 10))  # Sum the periods attended (1 for present, 0 for absent)
+                                    for record in attendance_records
+                                )
 
                                 # Calculate attendance percentage based on total periods in the semester
                                 attendance_percentage = (total_present / total_periods_in_semester) * 100
@@ -806,7 +1365,6 @@ elif menu == "Admin Login":
                                 # Display detailed information for the attendance analysis
                                 st.write(f"**Total class days in Semester:** {total_classes_in_semester}")
                                 st.write(f"**Total Periods or classes in Semester:** {total_periods_in_semester}")
-
                                 st.write(f"**Total Attendance Days:** {total_days}")
                                 st.write(f"**Total Periods or classes Attended:** {total_present}")
                                 st.write(f"**Attendance Percentage:** {attendance_percentage:.2f}%")
@@ -815,8 +1373,33 @@ elif menu == "Admin Login":
                                 st.write("### Detailed Attendance Breakdown:")
                                 for record in attendance_records:
                                     st.write(f"**Date:** {record[1]}, **Day:** {record[2]}")  # Date and Day
+                                    
+                                    # Fetch subject and teacher information for each period
                                     for i in range(3, 10):  # Assuming period information starts from index 3 to 9
-                                        st.write(f"**Period {i-2}:** {'Present' if record[i] == 1 else 'Absent'}")
+                                        if record[i] == 1:  # Check if the student was present
+                                            period = f"Period {i-2}"  # Periods are labeled starting from Period 1
+                                            
+                                            # Fetch the subject and teacher for the corresponding period
+                                            period_number = i - 2  # Adjust the index to match periods 1-7
+                                            
+                                            cursor.execute("""
+                                                SELECT subject, teacher 
+                                                FROM timetable
+                                                WHERE day = ? AND period = ?
+                                            """, (record[2], period))  # Using the formatted period like "Period 1"
+                                            
+                                            timetable_entry = cursor.fetchone()
+                                            
+                                            if timetable_entry:
+                                                subject, teacher = timetable_entry
+                                                st.write(f"**{period}:** Present | **Subject:** {subject} | **Teacher:** {teacher}")
+                                            else:
+                                                st.write(f"**{period}:** Present | No timetable entry found.")
+
+
+                                        else:
+                                            period = f"Period {i-2}"  # Periods are labeled starting from 1
+                                            st.write(f"**{period}:** Absent")
                             else:
                                 st.write("No attendance records found for this student.")
                         else:
@@ -824,7 +1407,7 @@ elif menu == "Admin Login":
                     else:
                         st.write("No year or semester information found for this student.")
 
-                        
+
                 # Initialize session state for form visibility
                 if f"form_shown_{student_id}" not in st.session_state:
                     st.session_state[f"form_shown_{student_id}"] = False
@@ -853,31 +1436,66 @@ elif menu == "Admin Login":
                     new_password = st.text_input("Password", type="password", value=student[1], key=f"password_{student_id}")
                     new_device_ip = st.text_input("Device IP", value=student[9], key=f"device_ip_{student_id}")
 
-                    # Save changes button
+                    # Option to display existing face encoding
+                    st.write("Current captured face encoding:")
+                    if student[10]:
+                        try:
+                            # Show face encoding as a string (numerical array or list)
+                            face_encoding_str = str(student[10])  # Convert the face encoding to a string format
+                            st.text_area("Face Encoding", value=face_encoding_str, height=200)  # Display it as a text area
+                        except Exception as e:
+                            st.error(f"Failed to display the current face encoding: {str(e)}")
+
+                    st.write("You can capture a new face for this student.")
+
+                    new_face_encoding = None
+
+                    # Save changes button - automatically handles face capture and data update
                     if st.button("Save Changes", key=f"save_changes_{student_id}"):
                         try:
-                            # Validate inputs
+                            # Step 1: Capture the new face image
+                            st.write("Capturing new face data...")
+                            new_face_image = capture_face()  # Capture face image using previously defined function
+                            if new_face_image is not None:
+                                new_face_encoding = get_face_encoding(new_face_image)  # Get face encoding from captured image
+                                if new_face_encoding is not None:
+                                    st.success("New face captured and encoded successfully!")
+                                else:
+                                    st.error("Failed to encode the captured face.")
+
+                            else:
+                                st.error("Failed to capture the face.")
+
+
+                            # Step 2: Validate required fields
                             if not new_user_id or not new_password or not new_device_ip:
                                 st.error("User ID, Password, and Device IP are required fields.")
-                            else:
-                                # Update student details in the database
-                                cursor.execute("""
-                                    UPDATE students
-                                    SET user_id = ?, password = ?, device_id = ?, name = ?, roll = ?, section = ?, email = ?, enrollment_no = ?, year = ?, semester = ?
-                                    WHERE user_id = ?
-                                """, (
-                                    new_user_id, new_password, new_device_ip, new_name, new_roll, new_section,
-                                    new_email, new_enrollment_no, new_year, new_semester, student_id
-                                ))
-                                conn.commit()
+                        
 
-                                # Confirm success
-                                if cursor.rowcount > 0:
-                                    st.success(f"Details for {student_name} have been successfully updated!")
-                                else:
-                                    st.error("No changes were made. Please verify the details.")
-                                # Close the form after successful update
-                                st.session_state[f"form_shown_{student_id}"] = False
+                            # Step 3: Prepare face encoding blob for updating
+                            face_encoding_blob = new_face_encoding.tobytes() if new_face_encoding is not None else student[10]  # Retain old encoding if no new face captured
+
+                            # Step 4: Update student details in the database, including the face encoding
+                            st.write("Updating student details...")
+                            cursor.execute("""
+                                UPDATE students
+                                SET user_id = ?, password = ?, device_id = ?, name = ?, roll = ?, section = ?, email = ?, enrollment_no = ?, year = ?, semester = ?, student_face = ?
+                                WHERE user_id = ?
+                            """, (
+                                new_user_id, new_password, new_device_ip, new_name, new_roll, new_section,
+                                new_email, new_enrollment_no, new_year, new_semester, face_encoding_blob, student_id
+                            ))
+                            conn.commit()
+
+                            # Step 5: Confirm success
+                            if cursor.rowcount > 0:
+                                st.success(f"Details for {student_name} and face encoding have been successfully updated!")
+                            else:
+                                st.error("No changes were made. Please verify the details.")
+
+                            # Close the form after successful update
+                            st.session_state[f"form_shown_{student_id}"] = False
+
                         except Exception as e:
                             st.error(f"An error occurred while updating the details: {str(e)}")
 
@@ -905,6 +1523,7 @@ elif menu == "Admin Login":
                 # Display the attendance form if it's active
                 if st.session_state[f"attendance_form_shown_{student_id}"]:
                     st.header(f"Manually Update Attendance for {student_name}")
+                    st.error("PLEASE NOTE : only overwrite attendance in case of student unable to give attendance though present because any action otherwise can lead to improper calculation of attendance!!!!")
 
                     # Date input for selecting the attendance date
                     selected_date = st.date_input("Select Date", key=f"attendance_date_{student_id}")
@@ -974,52 +1593,46 @@ elif menu == "Admin Login":
             title_style = styles['Title']
             heading_style = styles['Heading1']
             normal_style = styles['Normal']
-            
+
             # PDF content
             content = []
 
-            # Add Institute and Admin details
-            content.append(styled_paragraph("Institute Name: XYZ University", title_style))
-            content.append(styled_paragraph(f"Generated by: {admin_details['name']}", normal_style))
-            content.append(styled_paragraph(f"Department: {admin_details['department']}", normal_style))
-            content.append(styled_paragraph(f"Date Range: {start_date} to {end_date}", normal_style))
+            # Generate PDF content
+            content.append(Paragraph(f"Generated by: {admin_details.get('name', 'Unknown')}", normal_style))
+            content.append(Paragraph(f"Department: {admin_details.get('department', 'Not Present')}", normal_style))
+            content.append(Paragraph(f"Designation: {admin_details.get('designation', 'Not Present')}", normal_style))
+            content.append(Paragraph(f"Email: {admin_details.get('email', 'Unknown')}", normal_style))
+            content.append(Paragraph(f"Phone: {admin_details.get('phone', 'Not Present')}", normal_style))
+            content.append(Paragraph(f"Date Range: {start_date} to {end_date}", normal_style))
 
             # Add semester details
-            content.append(styled_paragraph(f"Semester: {start_date.year} - {end_date.year}", normal_style))
-            content.append(styled_paragraph(f"Total Class days: {total_classes_in_semester}", normal_style))
-            content.append(styled_paragraph(f"Total Periods: {total_periods_in_semester}", normal_style))
+            content.append(Paragraph(f"Semester: {start_date.year} - {end_date.year}", normal_style))
+            content.append(Paragraph(f"Total Class days: {total_classes_in_semester}", normal_style))
+            content.append(Paragraph(f"Total Periods: {total_periods_in_semester}", normal_style))
 
             # Add student attendance report
             for student in students:
-                content.append(styled_paragraph(f"Student: {student['name']}", heading_style))
-                
+                content.append(Paragraph(f"Student: {student['name']}", heading_style))
+
                 # Table data for attendance
                 data = [["Date", "Attendance"]]
-                
                 total_classes = 0
                 total_present_classes = 0
                 total_periods = 0
                 total_present_periods = 0
                 attendance_periods = {}
 
-                # Fetch attendance data for the selected period
                 for record in student['attendance']:
                     record_date = datetime.strptime(record['date'], '%Y-%m-%d').date() if isinstance(record['date'], str) else record['date']
                     if start_date <= record_date <= end_date:
                         data.append([record_date, "Present" if record['status'] else "Absent"])
-
-                        # Count total classes and presents
                         total_classes += 1
                         if record['status']:
                             total_present_classes += 1
-
-                        # Count total periods and presents
                         total_periods += 1
                         if record['status']:
                             total_present_periods += 1
-
-                        # Group attendance by period (e.g., month)
-                        period_key = record_date.strftime('%Y-%m')  # Period as Year-Month
+                        period_key = record_date.strftime('%Y-%m')
                         if period_key not in attendance_periods:
                             attendance_periods[period_key] = {"present": 0, "total": 0}
                         attendance_periods[period_key]["total"] += 1
@@ -1027,8 +1640,8 @@ elif menu == "Admin Login":
                             attendance_periods[period_key]["present"] += 1
 
                 table = Table(data)
-                table.setStyle(TableStyle([(
-                    'BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
@@ -1036,39 +1649,25 @@ elif menu == "Admin Login":
                     ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ]))
-                
                 content.append(table)
 
-                # Attendance percentage and pass/fail for classes attended
-                if total_classes_in_semester > 0:
-                    attendance_percentage_classes = (total_present_classes / total_classes_in_semester) * 100
-                else:
-                    attendance_percentage_classes = 0
-
-                # Attendance percentage and pass/fail for periods attended
-                if total_periods_in_semester > 0:
-                    attendance_percentage_periods = (total_present_periods / total_periods_in_semester) * 100
-                else:
-                    attendance_percentage_periods = 0
-
+                attendance_percentage_classes = (total_present_classes / total_classes_in_semester) * 100 if total_classes_in_semester > 0 else 0
+                attendance_percentage_periods = (total_present_periods / total_periods_in_semester) * 100 if total_periods_in_semester > 0 else 0
                 pass_fail_classes = "Pass" if attendance_percentage_classes >= 75 else "Fail"
                 pass_fail_periods = "Pass" if attendance_percentage_periods >= 75 else "Fail"
 
-                content.append(styled_paragraph(f"Attendance Percentage (Class days Attended): {attendance_percentage_classes:.2f}%", normal_style))
-                content.append(styled_paragraph(f"Pass/Fail Status (Class days): {pass_fail_classes}", normal_style))
+                content.append(Paragraph(f"Attendance Percentage (Class days): {attendance_percentage_classes:.2f}%", normal_style))
+                content.append(Paragraph(f"Pass/Fail Status (Class days): {pass_fail_classes}", normal_style))
+                content.append(Paragraph(f"Attendance Percentage (Periods): {attendance_percentage_periods:.2f}%", normal_style))
+                content.append(Paragraph(f"Pass/Fail Status (Periods): {pass_fail_periods}", normal_style))
 
-                content.append(styled_paragraph(f"Attendance Percentage (Periods Attended): {attendance_percentage_periods:.2f}%", normal_style))
-                content.append(styled_paragraph(f"Pass/Fail Status (Periods): {pass_fail_periods}", normal_style))
-
-                # Add Period-wise Attendance
-                content.append(styled_paragraph("Period-wise Attendance:", heading_style))
                 period_data = [["Period", "Present", "Total"]]
                 for period, values in attendance_periods.items():
                     period_data.append([period, values["present"], values["total"]])
 
                 period_table = Table(period_data)
-                period_table.setStyle(TableStyle([(
-                    'BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                period_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
@@ -1078,37 +1677,25 @@ elif menu == "Admin Login":
                 ]))
                 content.append(period_table)
 
-                # Graphs for Attendance (Modified to match the updated analysis)
                 fig, ax = plt.subplots(figsize=(6, 4))
-
-                # Assuming 'attendance_periods' is a dictionary with period-wise data
                 periods = list(attendance_periods.keys())
                 presents = [attendance_periods[period]["present"] for period in periods]
                 total = [attendance_periods[period]["total"] for period in periods]
 
-                # Create bar chart with Present and Absent counts
                 ax.bar(periods, presents, label="Present", alpha=0.7, color='g')
                 ax.bar(periods, [total[i] - presents[i] for i in range(len(periods))], label="Absent", alpha=0.7, color='r')
-
-                # Set labels and title
                 ax.set_xlabel('Period')
                 ax.set_ylabel('Attendance Count')
-                ax.set_title(f"Attendance Analysis for {student_name}")
+                ax.set_title(f"Attendance Analysis for {student['name']}")
                 ax.legend()
 
-                # Save plot to a buffer
                 img_buffer = BytesIO()
                 plt.savefig(img_buffer, format="png")
                 img_buffer.seek(0)
+                content.append(Paragraph("<br/>", normal_style))
+                content.append(Image(img_buffer, width=400, height=300))
 
-                # Add space and the graph to the content
-                content.append(Paragraph("<br/>", normal_style))  # Space before the image
-                content.append(Image(img_buffer, width=400, height=300))  # Add the graph to the PDF
-
-            # Build PDF document
             doc.build(content)
-            
-            # Save to buffer
             buffer.seek(0)
             return buffer
 
@@ -1185,7 +1772,7 @@ elif menu == "Admin Login":
                     student_id = student[0]
                     cursor.execute("SELECT * FROM attendance WHERE student_id = ?", (student_id,))
                     attendance_records = cursor.fetchall()
-                    attendance = [{"date": record[1], "status": sum(record[3:]) > 0} for record in attendance_records]
+                    attendance = [{"date": record[1], "status": sum(x or 0 for x in record[3:]) > 0} for record in attendance_records]
                     students.append({
                         "name": student[2],
                         "attendance": attendance
@@ -1232,7 +1819,7 @@ elif menu == "Admin Login":
             year = st.selectbox("Select Year", [1, 2, 3, 4])
 
             # Dropdown for selecting Semester (1 or 2)
-            semester = st.selectbox("Select Semester", [1, 2])
+            semester = st.selectbox("Select Semester", [1, 2, 3, 4, 5, 6, 7, 8])
 
             # Input fields for start date, end date, and total holidays
             start_date = st.date_input(f"Start Date (Year {year}, Semester {semester})")
@@ -1267,6 +1854,200 @@ elif menu == "Admin Login":
         # Call the function to display the form
         display_semester_form()
         
+        # Create a Streamlit interface
+        st.title("Face Recognition - Single beam Student ID Matching and Attendance Marking system")
+
+        # Button to start capture and retry mechanism
+        retry = True
+        retry_count = 0  # Counter to make button keys unique
+
+        while retry:
+            # Add a button to start the face capture process with a unique key
+            start_button = st.button("Start Capture / reset field for New Shot", key=f"start_capture_button_{retry_count}")
+
+            if start_button:
+                # Capture and detect faces
+                captured_faces, face_locations = capture_and_detect_faces()
+
+                if captured_faces:
+                    # Cluster detected faces to group them by person
+                    num_people, cluster_labels = cluster_faces(captured_faces)
+
+                    st.write(f"Detected {len(captured_faces)} faces in total.")
+                    st.write(f"Identified {num_people} distinct people.")
+
+                    # Match captured faces with the database
+                    matched_students = match_faces_with_database(captured_faces)
+
+                    if matched_students:
+                        st.write(f"Found {len(matched_students)} matching students:")
+
+                        # Get current period and mark attendance
+                        current_period = get_current_period()
+
+                        if current_period:
+                            st.success(f"Attendance for {current_period} is being marked automatically, waiting for confirmation from server!")
+
+                            # Define period times for attendance marking
+                            period_times = {
+                                "Period 1": ("09:30", "10:20"),
+                                "Period 2": ("10:20", "11:10"),
+                                "Period 3": ("11:10", "12:00"),
+                                "Period 4": ("12:00", "12:50"),
+                                "Period 5": ("13:40", "14:30"),
+                                "Period 6": ("14:30", "15:20"),
+                                "Period 7": ("15:20", "21:10")
+                            }
+
+                            # Initialize attendance data for all periods as False (Absent)
+                            attendance_data = {period: False for period in period_times.keys()}
+
+                            # Mark the current period as present (True)
+                            attendance_data[current_period] = True
+
+                            # Define the days array
+                            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+                            # Automatically set the current day from the system date
+                            current_day = datetime.now().strftime("%A")  # Get the full weekday name (e.g., "Monday", "Tuesday")
+
+                            # Check if today is a weekday
+                            if current_day in days:
+                                # Display the day selector with the current day pre-selected
+                                selected_day = st.selectbox("Select Day", days, index=days.index(current_day))  # Pre-select current day
+
+                                for user_id, name in matched_students:
+                                    # Check if attendance record already exists for the student
+                                    cursor.execute("""
+                                        SELECT * FROM attendance WHERE student_id = ? AND date = ? AND day = ?
+                                    """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
+                                    existing_record = cursor.fetchone()
+
+                                    if existing_record:
+                                        # Update the attendance for the current period
+                                        period_column = f"period_{list(period_times.keys()).index(current_period) + 1}"
+                                        cursor.execute(f"""
+                                            UPDATE attendance 
+                                            SET {period_column} = 1
+                                            WHERE student_id = ? AND date = ? AND day = ?
+                                        """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day))
+                                        conn.commit()
+                                        st.success(f"Attendance updated for {name} in {current_period} on {selected_day}!")
+                                    else:
+                                        # Insert new attendance record
+                                        cursor.execute("""
+                                            INSERT INTO attendance (student_id, date, day, period_1, period_2, period_3, period_4, period_5, period_6, period_7)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        """, (user_id, datetime.now().strftime('%Y-%m-%d'), selected_day, *attendance_data.values()))
+                                        conn.commit()
+                                        st.success(f"Attendance for {name} marked successfully in {current_period} on {selected_day}!")
+                                        st.write("Face capture process completed.")
+                            else:
+                                # Display a warning if today is a weekend
+                                st.warning(f"No attendance marking allowed on {current_day} as it is a holiday.")
+                                st.write("Face capture process completed.")
+                        else:
+                            st.warning("No active class period at the moment.")
+                            st.write("Face capture process completed.")
+                    else:
+                        st.write("No matches found in the database.")
+                        st.write("Face capture process completed.")
+                else:
+                    st.write("No faces detected. Please try again.")
+                    st.write("Face capture process completed.")
+
+            # Option to retry capturing faces if needed with a unique key
+            retry_count += 1  # Increment retry counter for unique key
+            retry = st.button("enhanced scanning coming soon!!", key=f"retry_capture_button_{retry_count}")
+
+            if not retry:
+                st.write("mark attendance of upto 30 people!")
+                
+        # Streamlit interface
+        st.title("Debarred Students - Attendance Alert System")
+
+        # Fetch students with attendance below 75%
+        low_attendance_students = get_low_attendance_students()
+
+        if low_attendance_students:
+            st.subheader("Debarred Students")
+            for student in low_attendance_students:
+                user_id, name, email, attendance_percentage = student
+                st.write(f"Name: {name}, Email: {email}, Attendance: {attendance_percentage:.2f}%")
+                
+                # Button to send alert email
+                if st.button(f"Alert {name}", key=f"alert_{user_id}"):
+                    send_email(email, name, attendance_percentage)
+        else:
+            st.info("No students have attendance below the threshold.")
+            
+         # Notification Center for Disputes
+        st.subheader("Dispute Notifications")
+        st.info("Below are the pending disputes raised by students.")
+
+        # Fetch pending disputes with student details
+        cursor.execute("""
+            SELECT d.id, d.student_id, s.name, s.enrollment_no, s.roll, d.date, d.reason 
+            FROM disputes d
+            JOIN students s ON d.student_id = s.user_id
+            WHERE d.status = 'Pending'
+        """)
+        disputes = cursor.fetchall()
+
+        if disputes:
+            for dispute in disputes:
+                dispute_id, student_id, student_name, enrollment_no, roll_no, date, reason = dispute
+                st.write(f"**Dispute ID:** {dispute_id}")
+                st.write(f"**Student ID:** {student_id}")
+                st.write(f"**Name:** {student_name}")
+                st.write(f"**Enrollment No.:** {enrollment_no}")
+                st.write(f"**Roll No.:** {roll_no}")
+                st.write(f"**Date:** {date}")
+                st.write(f"**Reason:** {reason}")
+
+                # Button to mark the dispute as resolved
+                if st.button(f"Resolve Dispute {dispute_id}"):
+                    cursor.execute("UPDATE disputes SET status = 'Resolved' WHERE id = ?", (dispute_id,))
+                    conn.commit()
+                    st.success(f"Dispute ID {dispute_id} marked as resolved.")
+        else:
+            st.write("No pending disputes.")
+
+        # Timetable Entry Form
+        st.title("Timetable Management")
+
+        with st.form("add_timetable"):
+            day = st.selectbox("Select Day", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
+            period = st.selectbox("Select Period", ["Period 1", "Period 2", "Period 3", "Period 4", "Period 5", "Period 6", "Period 7"])
+            subject = st.text_input("Subject Name")
+            teacher = st.text_input("Teacher Name")
+            submit = st.form_submit_button("Add Entry")
+
+            if submit:
+                if day and period and subject and teacher:
+                    cursor.execute("""
+                        INSERT INTO timetable (day, period, subject, teacher) 
+                        VALUES (?, ?, ?, ?)
+                    """, (day, period, subject, teacher))
+                    conn.commit()
+                    st.success(f"Timetable entry added: {day} - {period} - {subject} - {teacher}")
+                else:
+                    st.error("All fields are required!")
+
+        # View Timetable
+        st.header("View Timetable")
+        selected_day = st.selectbox("Select Day to View", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
+        if selected_day:
+            cursor.execute("""
+                SELECT period, subject, teacher FROM timetable WHERE day = ? ORDER BY period
+            """, (selected_day,))
+            timetable = cursor.fetchall()
+
+            if timetable:
+                st.table(timetable)
+            else:
+                st.warning(f"No timetable found for {selected_day}.")
+            
         # Logout Button
         if st.button("Logout"):
             st.session_state.logged_in = False  # Reset login state
@@ -1284,12 +2065,51 @@ elif menu == "Admin Login":
         if st.button("Login"):
             cursor.execute("SELECT * FROM admin WHERE admin_id = ? AND password = ?", (admin_id, admin_password))
             admin = cursor.fetchone()
+
             if admin:
-                # Store login state in session_state
-                st.session_state.logged_in = True
-                st.session_state.admin_id = admin_id
-                st.session_state.admin_name = admin[0]
-                st.session_state.profile_data = True  # Admin profile is now accessible
-                st.rerun()  # Refresh the page to show the admin dashboard
+                # Check if admin profile exists
+                cursor.execute("SELECT * FROM admin_profile WHERE admin_id = ?", (admin_id,))
+                profile = cursor.fetchone()
+
+                if profile:
+                    # Admin profile exists, proceed with face verification
+                    captured_face = capture_face()
+                    captured_encoding = get_face_encoding(captured_face)
+
+                    # Check if captured_encoding is valid (not None and has a valid shape/size)
+                    if captured_encoding is not None and len(captured_encoding) > 0:
+                        cursor.execute("SELECT face_encoding FROM admin_profile WHERE admin_id = ?", (admin_id,))
+                        stored_encoding_data = cursor.fetchone()
+
+                        if stored_encoding_data:
+                            stored_encoding = np.frombuffer(stored_encoding_data[0], dtype=np.float64)
+                            
+                            # Debugging: Print both encodings to compare
+                            st.write("Captured Encoding: ", captured_encoding)
+                            st.write("Stored Encoding: ", stored_encoding)
+                            
+                            if authenticate_with_face(captured_encoding, stored_encoding):
+                                st.session_state.logged_in = True
+                                st.session_state.admin_id = admin_id
+                                st.session_state.admin_name = admin[0]
+                                st.session_state.profile_data = True
+                                st.success("Login successful!")
+                                st.rerun()  # Refresh the page to show the admin dashboard
+                            else:
+                                st.error("Face recognition failed as your face didn't match our records. Try again!")
+                        else:
+                            st.error("No stored face encoding found.")
+                    else:
+                        st.error("Face capture failed. Please try again.")
+                else:
+                    # Admin profile does not exist, login without face ID verification
+                    st.session_state.logged_in = True
+                    st.session_state.admin_id = admin_id
+                    st.session_state.admin_name = admin[0]
+                    st.session_state.profile_data = False  # Profile not found, so no profile data
+                    st.success("Login successful! Profile not found, proceed to complete your profile setup.")
+                    st.rerun()  # Refresh the page to show the admin dashboard
+
+
             else:
                 st.error("Invalid admin ID or password.")
