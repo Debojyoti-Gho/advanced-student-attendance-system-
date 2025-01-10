@@ -8,6 +8,7 @@ opencv-python
 face_recognition
 uuid
 dlib==19.22.0
+cmake
 scipy
 torch
 torchvision
