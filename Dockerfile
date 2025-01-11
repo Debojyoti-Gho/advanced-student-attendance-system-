@@ -1,30 +1,35 @@
-# Use an official Python runtime as the base image
-FROM python:3.8-slim
+# Use an official Python base image
+FROM python:3.9-slim
 
-# Set environment variables to prevent Python from writing pyc files to disc
-# and to make the output of Python unbuffered.
+# Set environment variables to prevent Python from buffering stdout/stderr
 ENV PYTHONUNBUFFERED 1
 
-# Install system dependencies including CMake and build-essential
+# Install dependencies for building dlib
 RUN apt-get update && apt-get install -y \
-    cmake \
     build-essential \
+    cmake \
+    g++ \
+    wget \
+    libopenblas-dev \
+    liblapack-dev \
+    python3-dev \
+    libboost-all-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container
+# Set a working directory
 WORKDIR /app
 
-# Copy the requirements.txt into the container
-COPY requirements.txt /app/
+# Copy the requirements.txt file into the container
+COPY requirements.txt .
 
-# Install the Python dependencies inside the container
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app's files into the container
-COPY . /app/
+# Copy your Streamlit app files into the container
+COPY . .
 
-# Expose the Streamlit port (default is 8501)
+# Expose the port Streamlit runs on
 EXPOSE 8501
 
-# Command to run the app using Streamlit
+# Run Streamlit app
 CMD ["streamlit", "run", "app.py"]
