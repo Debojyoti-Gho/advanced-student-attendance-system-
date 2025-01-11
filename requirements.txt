@@ -1,5 +1,5 @@
 pip==24.3.1
-wheel dlib==19.24.6
+pip wheel dlib==19.24.6
 libgl1
 streamlit
 asyncio
