@@ -1,5 +1,5 @@
 pip==24.3.1
-https://github.com/davisking/dlib/releases/download/v19.22.1/dlib-19.22.1-cp38-cp38-linux_x86_64.whl
+dlib==19.22.1
 streamlit
 asyncio
 bleak
