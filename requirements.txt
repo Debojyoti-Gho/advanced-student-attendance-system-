@@ -1,6 +1,5 @@
 pip==24.3.1
 ./wheels/dlib-19.24.6-cp39-cp39-win_amd64.whl
-cmake
 dlib
 streamlit
 asyncio
