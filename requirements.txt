@@ -5,7 +5,7 @@ bleak
 reportlab
 matplotlib
 opencv-python
-cmake==3.10
+cmake
 face_recognition
 uuid
 scipy
