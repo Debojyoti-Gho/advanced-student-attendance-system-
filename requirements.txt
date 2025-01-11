@@ -1,12 +1,11 @@
 pip==24.3.1
-dlib
+https://github.com/davisking/dlib/releases/download/v19.22.1/dlib-19.22.1-cp38-cp38-linux_x86_64.whl
 streamlit
 asyncio
 bleak
 reportlab
 matplotlib
 opencv-python
-cmake
 face_recognition
 uuid
 scipy
