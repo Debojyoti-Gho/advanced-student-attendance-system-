@@ -1,5 +1,5 @@
 pip==24.3.1
-.cache/pip/wheels/8d/16/b2/d2df2ea5d9430e80343c7b696e9588e5cc98b0d903d434d76/dlib-19.24.6-cp312-cp312-linux_x86_64.whl 
+.cache/pip/wheels/dlib-19.24.6-cp312-cp312-linux_x86_64.whl 
 libgl1
 streamlit
 asyncio
