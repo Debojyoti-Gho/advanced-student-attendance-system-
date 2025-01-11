@@ -1,5 +1,5 @@
 pip==24.3.1
-pip wheel dlib==19.24.6
+dlib-19.24.6-cp312-cp312-linux_x86_64.whl size=4137208 sha256=360503f4257b34c2ae1a630ea56edfe7266415ef4e46c08d357d5230ce0aaeb8
 libgl1
 streamlit
 asyncio
