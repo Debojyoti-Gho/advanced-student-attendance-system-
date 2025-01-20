@@ -23,13 +23,15 @@ import time
 import torch
 from torchvision import transforms
 from sklearn.cluster import DBSCAN
+from sklearn.neighbors import KDTree
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
 # Database setup
-conn = sqlite3.connect("asasspecial.db", check_same_thread=False)
+conn = sqlite3.connect("/Users/debojyotighosh/Desktop/asasspecial.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # Create tables
@@ -52,8 +54,10 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS admin (
     admin_id TEXT PRIMARY KEY,
     password TEXT
+    active INTEGER DEFAULT 1
 )
 """)
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS attendance (
     student_id TEXT,
@@ -112,8 +116,19 @@ CREATE TABLE IF NOT EXISTS timetable (
     period TEXT NOT NULL, -- e.g., Period 1, Period 2
     subject TEXT NOT NULL,
     teacher TEXT NOT NULL
-);              
+)              
 """)
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS admin_audit (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    timestamp DATETIME NOT NULL,
+    FOREIGN KEY (admin_id) REFERENCES admin (admin_id)
+);
+""")
+
 # Commit the changes
 conn.commit()
 
@@ -307,97 +322,147 @@ def send_email(student_email, student_name, attendance_percentage):
     except Exception as e:
         st.error(f"Failed to send email to {student_name} ({student_email}). Error: {str(e)}")
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 def capture_and_detect_faces():
     cap = cv2.VideoCapture(0)  # Open webcam
+    if not cap.isOpened():
+        st.error("Cannot access the webcam.")
+        return None, None
+
+    face_encodings = []
+    face_locations = []
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            st.error("Failed to capture a frame from the webcam.")
             break
 
-        # Convert the frame from BGR to RGB
+        # Convert the frame from BGR to RGB for face_recognition
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Detect faces in the image
+        # Detect faces in the frame
         face_locations = face_recognition.face_locations(rgb_frame)
+        for top, right, bottom, left in face_locations:
+            # Draw rectangles around detected faces
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
 
-        if len(face_locations) > 0:
-            print(f"Found {len(face_locations)} face(s).")
-            # Get face encodings for each face in the frame
+        # Convert frame to JPEG for Streamlit display
+        _, jpeg_frame = cv2.imencode('.jpg', frame)
+        st.image(jpeg_frame.tobytes(), channels="BGR", use_column_width=True, caption="Real-Time Face Detection")
+
+        # Stop the loop if a face is detected
+        if face_locations:
             try:
                 face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-                return face_encodings, face_locations
+                logging.info(f"Detected {len(face_encodings)} face(s).")
+                break  # Stop after capturing faces
             except Exception as e:
-                print(f"Error generating face encodings: {str(e)}")
-                return None, None
-        else:
-            print("No faces found.")
-            return None, None
+                logging.error(f"Error generating face encodings: {e}")
+                break
+
+        # Add a "Stop" button to break the loop manually
+        if st.button("Stop Capture"):
+            break
+
+    cap.release()
+    return face_encodings, face_locations
 
 
-# Function to cluster detected faces into distinct people
-def cluster_faces(faces_encodings, eps=0.6, min_samples=2):
+def cluster_faces(face_encodings, eps=0.6, min_samples=2):
     """
-    Cluster the detected faces to group similar ones into the same person.
-    Uses DBSCAN clustering to automatically detect the number of distinct people.
-    Returns the number of clusters and the cluster labels.
+    Cluster detected faces into groups of distinct individuals using DBSCAN.
     """
-    if len(faces_encodings) == 0:
+    if not face_encodings:
+        logging.warning("No face encodings provided for clustering.")
         return 0, []
 
-    # Use DBSCAN clustering
     db = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
-    cluster_labels = db.fit_predict(faces_encodings)
+    cluster_labels = db.fit_predict(face_encodings)
 
-    # Count distinct people (clusters)
     num_people = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)  # -1 is noise
-
+    logging.info(f"Identified {num_people} distinct individual(s).")
     return num_people, cluster_labels
+
+
+def create_kdtree(database_encodings):
+    # Explicitly check for an empty list
+    if len(database_encodings) == 0:
+        logging.error("Empty database encodings provided. Cannot create KD-Tree.")
+        return None
+
+    try:
+        from sklearn.neighbors import KDTree
+        return KDTree(database_encodings)
+    except Exception as e:
+        logging.error(f"Error creating KD-Tree: {e}")
+        return None
 
 
 def match_faces_with_database(captured_faces):
     """
-    Match captured face encodings with the ones stored in the database.
-    Display matched user information if a match is found.
+    Match captured face encodings with entries in the database using a KD-Tree.
     """
-    # Query all stored face encodings and user information from the database
+    # Retrieve all face encodings and user details from the database
     cursor.execute("SELECT user_id, name, student_face FROM students")
     students = cursor.fetchall()
 
+    if not students:
+        logging.warning("No students found in the database.")
+        return []
+
+    database_encodings = []
+    user_info = []
+
+    for student in students:
+        user_id, name, stored_face_encoding = student
+        if stored_face_encoding:
+            try:
+                # Log the raw stored encoding data
+                logging.debug(f"Processing face encoding for {name}, user_id: {user_id}")
+                
+                # Deserialize face encoding from BLOB to numpy array
+                stored_encoding = np.frombuffer(stored_face_encoding, dtype=np.float64)
+                
+                # Verify the shape and size of the encoding
+                if stored_encoding.size != 128:  # Expected size of face encoding
+                    logging.warning(f"Face encoding for {name} seems to be an invalid size: {stored_encoding.size}")
+                    continue
+
+                database_encodings.append(stored_encoding)
+                user_info.append((user_id, name))
+            except Exception as e:
+                logging.error(f"Error processing face encoding for {name}: {e}")
+
+    # Log the number of valid encodings retrieved
+    logging.info(f"Retrieved {len(database_encodings)} valid face encodings from the database.")
+
+    if not database_encodings:
+        logging.warning("No valid face encodings found in the database.")
+        return []
+
+    # Build a KD-Tree for efficient matching
+    kdtree = create_kdtree(np.array(database_encodings))
+
     matched_students = []
-
-    # For each captured face, compare with database entries
     for captured_face in captured_faces:
-        for student in students:
-            user_id, name, stored_face_encoding = student
-            
-            # If stored_face_encoding exists, attempt to process it
-            if stored_face_encoding:
-                try:
-                    # Convert the stored face encoding from BLOB (binary data) to numpy array
-                    stored_face_encoding = np.frombuffer(stored_face_encoding, dtype=np.float64)
-
-                    # Compare the captured face with the stored face encoding
-                    matches = face_recognition.compare_faces([stored_face_encoding], captured_face)
-
-                    if matches[0]:
-                        matched_students.append((user_id, name))
-                        break  # Stop after the first match for this face
-
-                except Exception as e:
-                    # Handle any exception that occurs in the try block
-                    print(f"An error occurred while comparing faces: {str(e)}")
-            else:
-                print(f"No face encoding found for student {name}. Skipping match.")
+        # Find the nearest neighbor in the database
+        dist, index = kdtree.query([captured_face], k=1)
+        if dist[0][0] <= 0.6:  # Match threshold
+            matched_students.append(user_info[index[0][0]])
+            logging.info(f"Match found: {user_info[index[0][0]]}")
 
     return matched_students
 
-# Load the pre-trained MiDaS model for depth estimation
-model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
-model.eval()
 
+# Load the pre-trained MiDaS model for depth estimation on appropriate device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
+model.eval().to(device)
 def capture_face():
-    st.write("Turn on your camera to capture the face.")
+    st.write("Automatically turnig on your camera to capture the face.")
     cap = cv2.VideoCapture(0)  # Open the camera
     
     # Check if the camera is successfully opened
@@ -445,11 +510,12 @@ def capture_face():
 
     # Define the transformation (resize and normalization)
     transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize(384),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    transforms.ToPILImage(),
+    transforms.Resize(384),  # Ensure it resizes to 384x384
+    transforms.CenterCrop(384),  # Ensure the size matches the expected dimensions
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
     # Apply the transformations
     input_tensor = transform(rgb_frame).unsqueeze(0)
@@ -522,53 +588,65 @@ def authenticate_with_face(captured_encoding, stored_encoding, threshold=0.6):
     if distance < threshold:
         return True
     return False
+def fetch_user_agent_and_ip():
+    """
+    Automatically fetch User-Agent and IP from the client using an API and browser headers.
+    Stores these values in the session state for easy access.
+    """
+    if "user_agent" not in st.session_state or "ip_address" not in st.session_state:
+        try:
+            # Fetch User-Agent via headers
+            user_agent = st.session_state.get("user_agent", "unknown_agent")
+            
+            # Use external API to fetch IP
+            response = requests.get("https://api64.ipify.org?format=json")
+            ip_address = response.json().get("ip", "unknown_ip")
+
+            # Save to session state
+            st.session_state["user_agent"] = user_agent
+            st.session_state["ip_address"] = ip_address
+
+        except Exception as e:
+            st.error(f"Failed to fetch User-Agent or IP: {e}")
 
 def get_device_uuid():
     """
-    Generate a unique mobile device identifier using mobile-specific attributes like
-    device brand, model, operating system, and user-agent.
+    Generate a unique identifier for the device accessing the Streamlit app.
+    Automatically detects User-Agent and IP for mobile/desktop devices.
     """
     try:
-        # Get the user-agent string (critical for mobile devices)
-        user_agent = st.request.headers.get('User-Agent') if hasattr(st, 'request') else "unknown_agent"
-        
-        # Extract device and OS information from user-agent (we expect mobile patterns here)
-        if user_agent:
-            # Common mobile device identifiers (iOS and Android)
-            if "iPhone" in user_agent or "iPad" in user_agent:
-                device_brand = "Apple"
-                device_model = user_agent.split('(')[-1].split(';')[0]  # iPhone model or iPad model
-                os_version = "iOS " + user_agent.split('CPU iPhone OS ')[-1].split(' ')[0] if "iPhone" in user_agent else "iPadOS"
-            elif "Android" in user_agent:
-                device_brand = "Android"
-                device_model = user_agent.split('Build/')[0].split(' ')[-1]  # Extracts model name
-                os_version = user_agent.split('Android ')[-1].split(' ')[0]
-            else:
-                device_brand = "Unknown"
-                device_model = "Unknown Model"
-                os_version = "Unknown OS"
-        else:
-            device_brand = "Unknown"
-            device_model = "Unknown Model"
-            os_version = "Unknown OS"
+        # Fetch User-Agent from session state
+        user_agent = st.session_state.get("user_agent", "unknown_agent")
 
-        # Additional device information
-        node_name = platform.node()  # Device name or hostname
-        mac_address = uuid.getnode()  # MAC address (if available)
+        # Fetch the client's public IP address
+        ip_address = st.session_state.get("ip_address", "unknown_ip")
 
-        # Fetch the client's IP address (if available in Streamlit)
-        ip_address = st.query_params.get('ip', ['unknown_ip'])[0]
+        # Default values for device attributes
+        device_brand, device_model, os_version = "Unknown", "Unknown Model", "Unknown OS"
 
-        # Combine all the device-specific info into a unique string
+        # Parse User-Agent for mobile-specific information
+        if "iPhone" in user_agent or "iPad" in user_agent:
+            device_brand = "Apple"
+            device_model = user_agent.split('(')[-1].split(';')[0]
+            os_version = "iOS " + user_agent.split("CPU iPhone OS ")[-1].split(' ')[0]
+        elif "Android" in user_agent:
+            device_brand = "Android"
+            device_model = user_agent.split('Build/')[0].split(' ')[-1]
+            os_version = "Android " + user_agent.split('Android ')[-1].split(' ')[0]
+
+        # Additional attributes
+        node_name = platform.node()  # Hostname
+        mac_address = uuid.getnode()  # MAC address
+
+        # Generate a unique identifier by hashing key attributes
         unique_str = f"{device_brand}-{device_model}-{os_version}-{node_name}-{mac_address}-{ip_address}"
-
-        # Hash the string to generate a fixed-length UUID
         device_uuid = hashlib.sha256(unique_str.encode()).hexdigest()
 
-        st.success(f"Mobile Device ID fetched successfully: {device_uuid}")
+        st.success(f"Device ID generated successfully: {device_uuid}")
         return device_uuid
+
     except Exception as e:
-        st.error(f"Failed to fetch mobile device ID: {e}")
+        st.error(f"Error generating device ID: {e}")
         return None
 
 def get_precise_location(api_key=None):
@@ -691,9 +769,9 @@ def get_current_period():
         "Period 2": ("10:20", "11:10"),
         "Period 3": ("11:10", "12:00"),
         "Period 4": ("12:00", "12:50"),
-        "Period 5": ("12:40", "14:30"),
+        "Period 5": ("13:20", "14:30"),
         "Period 6": ("14:30", "15:20"),
-        "Period 7": ("15:20", "21:10")
+        "Period 7": ("15:20", "16:10")
     }
 
     current_time = datetime.now().time()
@@ -719,7 +797,7 @@ def get_current_period():
 st.title("ADVANCED STUDENT ATTENDANCE SYSTEM")
 st.subheader("developed by Debojyoti Ghosh")
 
-menu = st.sidebar.selectbox("Menu", ["Home", "Register", "Student Login", "Admin Login"])
+menu = st.sidebar.selectbox("Menu", ["Home", "Register", "Student Login", "Admin Login","Admin Management","Lab Examination System"])
 
 if menu == "Home":
     st.write("Welcome to the Student Management System!")
@@ -728,70 +806,119 @@ if menu == "Home":
 
 elif menu == "Register":
     st.header("Student Registration")
-    
-    # Student details input
-    name = st.text_input("Name")
-    roll = st.text_input("Roll Number")
-    section = st.text_input("Section")
-    email = st.text_input("Email")
-    enrollment_no = st.text_input("Enrollment Number")
-    year = st.text_input("Year")
-    semester = st.text_input("Semester")
-    user_id = st.text_input("User ID")
-    password = st.text_input("Password", type="password")
-    
-    # Fetch the device ID (UUID based)
-    device_id = get_device_uuid()  # Function defined earlier
 
-    if not device_id:
-        st.error("Could not fetch device ID, registration cannot proceed.")
-    
-    # Face capturing and encoding
-    if st.button("Register"):
-        # Capture face automatically as part of the registration process
-        face_image = capture_face()  # Capture face using the defined function
+    # Initialize session state variables for OTP and verification
+    if "email_otp" not in st.session_state:
+        st.session_state.email_otp = None
+    if "email_verified" not in st.session_state:
+        st.session_state.email_verified = False
 
-        if face_image is not None:
-            face_encoding = get_face_encoding(face_image)  # Get face encoding
-            
-            if face_encoding is not None:
-                # Proceed with registration if face encoding is successful
-                if device_id:
-                    # Check if the device is already registered
-                    cursor.execute("SELECT * FROM students WHERE device_id = ?", (device_id,))
-                    if cursor.fetchone():
-                        st.error("This device has already registered. Only one registration is allowed per device.")
-                    else:
-                        # Check if the user ID already exists
-                        cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
-                        if cursor.fetchone():
-                            st.error("User ID already exists.")
-                        else:
-                            # Insert the new student registration
-                            cursor.execute("""
-                            INSERT INTO students (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, student_face)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, face_encoding.tobytes()))
-                            conn.commit()
-                            
-                            # Confirm that the face data has been inserted
-                            cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
-                            student_data = cursor.fetchone()
-                            if student_data:
-                                st.success(f"Registration successful! You are registered with the device ID: {device_id}")
-                                st.success("Face data has been successfully stored.")
+    # Registration Form
+    with st.form("registration_form"):
+        # Input fields for student details
+        st.subheader("Student Details")
+        name = st.text_input("Name")
+        roll = st.text_input("Roll Number")
+        section = st.text_input("Section")
+        email = st.text_input("Email")  # Use this email for OTP verification
+        enrollment_no = st.text_input("Enrollment Number")
+        year = st.text_input("Year")
+        semester = st.text_input("Semester")
+        user_id = st.text_input("User ID")
+        password = st.text_input("Password", type="password")
+
+        st.subheader("Email Verification")
+        if not st.session_state.email_verified:
+            # Send OTP Button
+            if st.form_submit_button("Send OTP"):
+                if email:
+                    otp = str(np.random.randint(100000, 999999))
+                    st.session_state.email_otp = otp
+
+                    # SMTP Configuration
+                    smtp_server = 'smtp-relay.brevo.com'
+                    smtp_port = 587
+                    smtp_user = '823c6b001@smtp-brevo.com'
+                    smtp_password = '6tOJHT2F4x8ZGmMw'
+                    from_email = 'debojyotighoshmain@gmail.com'
+
+                    try:
+                        # Send OTP via email
+                        message = MIMEMultipart()
+                        message["From"] = from_email
+                        message["To"] = email
+                        message["Subject"] = "Your OTP for Student Registration"
+
+                        body = f"Your OTP for registration is: {otp}\n\nPlease enter this OTP to verify your email."
+                        message.attach(MIMEText(body, "plain"))
+
+                        with smtplib.SMTP(smtp_server, smtp_port) as server:
+                            server.starttls()
+                            server.login(smtp_user, smtp_password)
+                            server.sendmail(from_email, email, message.as_string())
+
+                        st.success(f"OTP sent to {email}. Please check your email.")
+                    except Exception as e:
+                        st.error(f"Failed to send OTP: {e}")
+                else:
+                    st.error("Please enter a valid email address.")
+
+        # OTP Verification
+        if st.session_state.email_otp and not st.session_state.email_verified:
+            otp_input = st.text_input("Enter the OTP sent to your email")
+            if st.form_submit_button("Verify OTP"):
+                if otp_input == st.session_state.email_otp:
+                    st.session_state.email_verified = True
+                    st.success("Email verified successfully! You can proceed with registration.")
+                else:
+                    st.error("Invalid OTP. Please try again.")
+
+        # Registration Button
+        if st.session_state.email_verified:
+            st.subheader("Complete Registration")
+            if st.form_submit_button("Register"):
+                fetch_user_agent_and_ip()
+
+                # Fetch the device ID (UUID based)
+                device_id = get_device_uuid()
+
+                if not device_id:
+                    st.error("Could not fetch device ID, registration cannot proceed.")
+                else:
+                    face_image = capture_face()  # Capture face using the defined function
+
+                    if face_image is not None:
+                        face_encoding = get_face_encoding(face_image)  # Get face encoding
+
+                        if face_encoding is not None:
+                            # Check if the device or user ID already exists
+                            cursor.execute("SELECT * FROM students WHERE device_id = ?", (device_id,))
+                            if cursor.fetchone():
+                                st.error("This device has already registered. Only one registration is allowed per device.")
                             else:
-                                st.error("Failed to store face data.")
-            else:
-                st.error("Failed to encode the captured face.")
-        else:
-            st.error("Failed to capture face. Please try again.")
+                                cursor.execute("SELECT * FROM students WHERE user_id = ?", (user_id,))
+                                if cursor.fetchone():
+                                    st.error("User ID already exists.")
+                                else:
+                                    # Insert into database
+                                    cursor.execute("""
+                                    INSERT INTO students (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, student_face)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (user_id, password, name, roll, section, email, enrollment_no, year, semester, device_id, face_encoding.tobytes()))
+                                    conn.commit()
+                                    st.success("Registration successful!")
+                        else:
+                            st.error("Failed to encode the captured face.")
+                    else:
+                        st.error("Failed to capture face. Please try again.")
 
 
 elif menu == "Student Login":
     st.header("Student Login")
     user_id = st.text_input("User ID")
     password = st.text_input("Password", type="password")
+    
+    fetch_user_agent_and_ip()
     
     # Fetch the device ID (IP address)
     device_id = get_device_uuid() 
@@ -853,9 +980,9 @@ elif menu == "Student Login":
                                 "Period 2": ("10:20", "11:10"),
                                 "Period 3": ("11:10", "12:00"),
                                 "Period 4": ("12:00", "12:50"),
-                                "Period 5": ("12:50", "14:30"),
+                                "Period 5": ("13:40", "14:30"),
                                 "Period 6": ("14:30", "15:20"),
-                                "Period 7": ("15:20", "21:10")
+                                "Period 7": ("15:20", "16:10")
                             }
 
                             # Function to get the current period based on time
@@ -1173,7 +1300,7 @@ if menu == "Admin Login":
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
 
-
+        st.markdown("---")
         # Advanced Search Section for Registered Students
         st.subheader("Advanced Search for Registered Students")
 
@@ -1264,30 +1391,68 @@ if menu == "Admin Login":
                     st.write(f"Semester: {student[8]}")
                     st.write(f"Device ID: {student[9]}")
 
-                    # Show student's attendance report
-                    st.subheader(f"Attendance Report for {student[2]}")
-                    cursor.execute("SELECT * FROM attendance WHERE student_id = ?", (student_id,))
-                    attendance_records = cursor.fetchall()
-                    if attendance_records:
-                        total_classes = len(attendance_records)
-                        total_present = sum([sum(record[3:]) for record in attendance_records])  # Sum of all periods attended
-                        percentage = (total_present / (total_classes * 7)) * 100  # Assuming 7 periods each day
-                        st.write(f"Total Classes: {total_classes}")
-                        st.write(f"Total Present: {total_present}")
-                        st.write(f"Attendance Percentage: {percentage:.2f}%")
+                    # Fetch the student's year and semester
+                    cursor.execute("""
+                        SELECT year, semester 
+                        FROM students 
+                        WHERE user_id = ?
+                    """, (student_id,))
+                    student_details = cursor.fetchone()
 
-                        # Detailed attendance for each day
-                        for record in attendance_records:
-                            st.write(f"Date: {record[1]}, Day: {record[2]}")
-                            for i in range(3, 10):  # Periods are in columns 3 to 9
-                                st.write(f"Period {i-2}: {'Present' if record[i] == 1 else 'Absent'}")
+                    if student_details:
+                        year, semester = student_details
+
+                        # Fetch semester details
+                        cursor.execute("""
+                            SELECT total_classes, total_periods 
+                            FROM semester_dates 
+                            WHERE year = ? AND semester = ?
+                        """, (year, semester))
+                        semester_details = cursor.fetchone()
+
+                        if semester_details:
+                            total_classes_in_semester, total_periods_in_semester = semester_details
+
+                            # Fetch attendance records for the student
+                            cursor.execute("SELECT * FROM attendance WHERE student_id = ?", (student_id,))
+                            attendance_records = cursor.fetchall()
+
+                            if attendance_records:
+                                total_classes_attended = len(attendance_records)  # Number of days attended
+                                total_periods_attended = sum(
+                                    sum(1 if record[i] == 1 else 0 for i in range(3, 10))  # Count periods attended
+                                    for record in attendance_records
+                                )
+
+                                # Calculate attendance percentage
+                                if total_periods_in_semester > 0:  # Avoid division by zero
+                                    attendance_percentage = (total_periods_attended / total_periods_in_semester) * 100
+                                else:
+                                    attendance_percentage = 0.0
+
+                                # Display attendance summary
+                                st.subheader(f"Attendance Report for {student_id}")
+                                st.write(f"Total Classes in Semester: {total_classes_in_semester}")
+                                st.write(f"Total Periods in Semester: {total_periods_in_semester}")
+                                st.write(f"Classes Attended: {total_classes_attended}")
+                                st.write(f"Periods Attended: {total_periods_attended}")
+                                st.write(f"Attendance Percentage: {attendance_percentage:.2f}%")
+
+                                # Detailed attendance
+                                for record in attendance_records:
+                                    st.write(f"Date: {record[1]}, Day: {record[2]}")
+                                    for i in range(3, 10):  # Columns for periods
+                                        period_status = 'Present' if record[i] == 1 else ('Absent' if record[i] == 0 else 'N/A')
+                                        st.write(f"Period {i-2}: {period_status}")
+                            else:
+                                st.write("No attendance records found for this student.")
+                        else:
+                            st.write("Semester details not available. Cannot calculate attendance percentage.")
                     else:
-                        st.write("No attendance records found for this student.")
-            else:
-                st.write("No students found based on the search criteria.")
-
-            
-            
+                        st.write("Student details not found.")
+                        
+        st.markdown("---")
+        st.markdown("---")
         # Section to View All Registered Students and Attendance Analysis
         st.subheader("Registered Students and Attendance Analysis")
 
@@ -1577,7 +1742,7 @@ if menu == "Admin Login":
         else:
             st.write("No registered students found.")
             
-            
+        st.markdown("---")
         # Helper function to style paragraphs
         def styled_paragraph(text, style):
             return Paragraph(text, style)
@@ -1793,7 +1958,7 @@ if menu == "Admin Login":
                 st.error("No students selected or no attendance records available for the selected period.")
 
                 
-                
+        st.markdown("---")    
         # Function to calculate the number of weekdays (excluding weekends) between two dates
         def calculate_weekdays(start_date, end_date):
             weekdays = 0
@@ -1854,6 +2019,7 @@ if menu == "Admin Login":
         # Call the function to display the form
         display_semester_form()
         
+        st.markdown("---")
         # Create a Streamlit interface
         st.title("Face Recognition - Single beam Student ID Matching and Attendance Marking system")
 
@@ -1880,7 +2046,7 @@ if menu == "Admin Login":
                     matched_students = match_faces_with_database(captured_faces)
 
                     if matched_students:
-                        st.write(f"Found {len(matched_students)} matching students:")
+                        logging.info(f"Matched Students: {matched_students}")
 
                         # Get current period and mark attendance
                         current_period = get_current_period()
@@ -1894,9 +2060,9 @@ if menu == "Admin Login":
                                 "Period 2": ("10:20", "11:10"),
                                 "Period 3": ("11:10", "12:00"),
                                 "Period 4": ("12:00", "12:50"),
-                                "Period 5": ("13:40", "14:30"),
+                                "Period 5": ("13:20", "14:30"),
                                 "Period 6": ("14:30", "15:20"),
-                                "Period 7": ("15:20", "21:10")
+                                "Period 7": ("15:20", "16:10")
                             }
 
                             # Initialize attendance data for all periods as False (Absent)
@@ -1950,10 +2116,10 @@ if menu == "Admin Login":
                             st.warning("No active class period at the moment.")
                             st.write("Face capture process completed.")
                     else:
-                        st.write("No matches found in the database.")
+                        logging.info("No matches found.")
                         st.write("Face capture process completed.")
                 else:
-                    st.write("No faces detected. Please try again.")
+                    logging.info("No faces detected or processed.try again!")
                     st.write("Face capture process completed.")
 
             # Option to retry capturing faces if needed with a unique key
@@ -1963,6 +2129,7 @@ if menu == "Admin Login":
             if not retry:
                 st.write("mark attendance of upto 30 people!")
                 
+        st.markdown("---")       
         # Streamlit interface
         st.title("Debarred Students - Attendance Alert System")
 
@@ -1981,6 +2148,7 @@ if menu == "Admin Login":
         else:
             st.info("No students have attendance below the threshold.")
             
+        st.markdown("---")   
          # Notification Center for Disputes
         st.subheader("Dispute Notifications")
         st.info("Below are the pending disputes raised by students.")
@@ -2012,7 +2180,8 @@ if menu == "Admin Login":
                     st.success(f"Dispute ID {dispute_id} marked as resolved.")
         else:
             st.write("No pending disputes.")
-
+            
+        st.markdown("---")
         # Timetable Entry Form
         st.title("Timetable Management")
 
@@ -2059,57 +2228,389 @@ if menu == "Admin Login":
     else:
         # Admin Login Form
         st.header("Admin Login")
-        admin_id = st.text_input("Admin ID")
-        admin_password = st.text_input("Admin Password", type="password")
+        admin_id = st.text_input("Admin ID", key="login_admin_id")
+        admin_password = st.text_input("Admin Password", type="password", key="login_admin_password")
 
+        # Session State Initialization
+        if "otp" not in st.session_state:
+            st.session_state.otp = None
+        if "otp_verified" not in st.session_state:
+            st.session_state.otp_verified = False
+        if "reset_admin_id" not in st.session_state:
+            st.session_state.reset_admin_id = None
+
+        # Forgot Password Form
+        with st.form("Forgot Password Form"):
+            st.subheader("Forgot Password?")
+            reset_admin_id = st.text_input("Enter your Admin ID to reset password", key="reset_admin_id_input")
+            submit_forgot_password = st.form_submit_button("Generate OTP")
+
+            if submit_forgot_password:
+                cursor.execute("SELECT email FROM admin_profile WHERE admin_id = ?", (reset_admin_id,))
+                admin_email = cursor.fetchone()
+
+                if admin_email:
+                    admin_email = admin_email[0]
+                    otp = str(np.random.randint(100000, 999999))  # Generate 6-digit OTP
+                    st.session_state.otp = otp  # Store OTP in session state
+                    st.session_state.reset_admin_id = reset_admin_id  # Save the admin ID for verification
+
+                    # SMTP Configuration
+                    smtp_server = 'smtp-relay.brevo.com'
+                    smtp_port = 587
+                    smtp_user = '823c6b001@smtp-brevo.com'
+                    smtp_password = '6tOJHT2F4x8ZGmMw'
+                    from_email = 'debojyotighoshmain@gmail.com'
+
+                    # Send OTP to email
+                    try:
+                        message = MIMEMultipart()
+                        message["From"] = from_email
+                        message["To"] = admin_email
+                        message["Subject"] = "Your OTP for Admin Login"
+
+                        body = f"Your OTP for Admin login is: {otp}\n\nPlease use this OTP to complete your login."
+                        message.attach(MIMEText(body, "plain"))
+
+                        with smtplib.SMTP(smtp_server, smtp_port) as server:
+                            server.starttls()
+                            server.login(smtp_user, smtp_password)
+                            server.sendmail(from_email, admin_email, message.as_string())
+
+                        st.success(f"OTP sent to {admin_email}. Please check your email.")
+                    except Exception as e:
+                        st.error(f"Error sending OTP: {e}")
+                else:
+                    st.error("Admin ID not found in the database.")
+
+        # OTP Verification
+        if st.session_state.otp:
+            with st.form("OTP Verification Form"):
+                st.subheader("OTP Verification")
+                otp_input = st.text_input("Enter the OTP sent to your email", key="otp_input")
+                submit_otp = st.form_submit_button("Verify OTP")
+
+                if submit_otp:
+                    if otp_input == st.session_state.otp:
+                        st.success("OTP verified successfully! Proceeding to face verification.")
+                        st.session_state.otp_verified = True  # Mark OTP as verified
+                    else:
+                        st.error("Invalid OTP. Please try again.")
+
+        # Face Verification After OTP
+        if st.session_state.otp_verified:
+            st.info("Face verification required.")
+            
+            # Only trigger face capture after OTP is verified
+            if st.session_state.otp_verified:
+                captured_face = capture_face()
+                captured_encoding = get_face_encoding(captured_face)
+
+                if captured_encoding is not None and len(captured_encoding) > 0:
+                    cursor.execute("SELECT face_encoding FROM admin_profile WHERE admin_id = ?", (st.session_state.reset_admin_id,))  # Get admin profile
+                    stored_encoding_data = cursor.fetchone()
+
+                    if stored_encoding_data:
+                        stored_encoding = np.frombuffer(stored_encoding_data[0], dtype=np.float64)
+                        if authenticate_with_face(captured_encoding, stored_encoding):
+                            st.session_state.logged_in = True
+                            st.session_state.admin_id = st.session_state.reset_admin_id
+                            st.success("Login successful with OTP and face verification!")
+                            st.rerun()  # Refresh the page to load the admin dashboard
+                        else:
+                            st.error("Face recognition failed. Try again!")
+                    else:
+                        st.error("No stored face encoding found for this admin ID.")
+                else:
+                    st.error("Face capture failed. Please try again.")
+
+        # Regular Admin Login (this part will be triggered only if OTP is not required)
         if st.button("Login"):
             cursor.execute("SELECT * FROM admin WHERE admin_id = ? AND password = ?", (admin_id, admin_password))
             admin = cursor.fetchone()
 
             if admin:
-                # Check if admin profile exists
-                cursor.execute("SELECT * FROM admin_profile WHERE admin_id = ?", (admin_id,))
-                profile = cursor.fetchone()
+                # Check if admin account is active
+                cursor.execute("SELECT active FROM admin WHERE admin_id = ?", (admin_id,))
+                active_status = cursor.fetchone()
 
-                if profile:
-                    # Admin profile exists, proceed with face verification
-                    captured_face = capture_face()
-                    captured_encoding = get_face_encoding(captured_face)
-
-                    # Check if captured_encoding is valid (not None and has a valid shape/size)
-                    if captured_encoding is not None and len(captured_encoding) > 0:
-                        cursor.execute("SELECT face_encoding FROM admin_profile WHERE admin_id = ?", (admin_id,))
-                        stored_encoding_data = cursor.fetchone()
-
-                        if stored_encoding_data:
-                            stored_encoding = np.frombuffer(stored_encoding_data[0], dtype=np.float64)
-                            
-                            # Debugging: Print both encodings to compare
-                            st.write("Captured Encoding: ", captured_encoding)
-                            st.write("Stored Encoding: ", stored_encoding)
-                            
-                            if authenticate_with_face(captured_encoding, stored_encoding):
-                                st.session_state.logged_in = True
-                                st.session_state.admin_id = admin_id
-                                st.session_state.admin_name = admin[0]
-                                st.session_state.profile_data = True
-                                st.success("Login successful!")
-                                st.rerun()  # Refresh the page to show the admin dashboard
-                            else:
-                                st.error("Face recognition failed as your face didn't match our records. Try again!")
-                        else:
-                            st.error("No stored face encoding found.")
-                    else:
-                        st.error("Face capture failed. Please try again.")
+                if active_status and active_status[0] == 0:  # Account is deactivated
+                    st.error("Your account has been deactivated. Please contact the system administrator.")
                 else:
-                    # Admin profile does not exist, login without face ID verification
-                    st.session_state.logged_in = True
-                    st.session_state.admin_id = admin_id
-                    st.session_state.admin_name = admin[0]
-                    st.session_state.profile_data = False  # Profile not found, so no profile data
-                    st.success("Login successful! Profile not found, proceed to complete your profile setup.")
-                    st.rerun()  # Refresh the page to show the admin dashboard
+                    # Check if admin profile exists
+                    cursor.execute("SELECT * FROM admin_profile WHERE admin_id = ?", (admin_id,))
+                    profile = cursor.fetchone()
 
+                    if profile:
+                        # Admin profile exists, proceed with face verification
+                        captured_face = capture_face()
+                        captured_encoding = get_face_encoding(captured_face)
 
+                        if captured_encoding is not None and len(captured_encoding) > 0:
+                            cursor.execute("SELECT face_encoding FROM admin_profile WHERE admin_id = ?", (admin_id,))
+                            stored_encoding_data = cursor.fetchone()
+
+                            if stored_encoding_data:
+                                stored_encoding = np.frombuffer(stored_encoding_data[0], dtype=np.float64)
+
+                                if authenticate_with_face(captured_encoding, stored_encoding):
+                                    st.session_state.logged_in = True
+                                    st.session_state.admin_id = admin_id
+                                    st.session_state.admin_name = admin[0]
+                                    st.session_state.profile_data = True
+                                    st.success("Login successful!")
+                                    st.rerun()  # Refresh the page to show the admin dashboard
+                                else:
+                                    st.error("Face recognition failed as your face didn't match our records. Try again!")
+                            else:
+                                st.error("No stored face encoding found.")
+                        else:
+                            st.error("Face capture failed. Please try again.")
+                    else:
+                        # Admin profile does not exist, login without face ID verification
+                        st.session_state.logged_in = True
+                        st.session_state.admin_id = admin_id
+                        st.session_state.admin_name = admin[0]
+                        st.session_state.profile_data = False  # Profile not found, so no profile data
+                        st.success("Login successful! Profile not found, proceed to complete your profile setup.")
+                        st.rerun()  # Refresh the page to show the admin dashboard
             else:
                 st.error("Invalid admin ID or password.")
+
+                
+# Section for Admin Management
+elif menu == "Admin Management":
+    st.header("Admin Account Management")
+
+    # Session state for OTP, Admin login, and Admin credentials
+    if "admin_otp" not in st.session_state:
+        st.session_state.admin_otp = None
+    if "otp_verified" not in st.session_state:
+        st.session_state.otp_verified = False
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    # Admin Login (Admin ID & Password)
+    if not st.session_state.admin_authenticated:
+        st.subheader("Admin Login")
+
+        admin_id = st.text_input("Enter Admin ID")
+        admin_password = st.text_input("Enter Admin Password", type="password")
+
+        if st.button("Login"):
+            cursor.execute("SELECT * FROM admin WHERE admin_id = ? AND password = ?", (admin_id, admin_password))
+            admin_data = cursor.fetchone()
+            if admin_data:
+                st.session_state.admin_authenticated = True
+                st.session_state.logged_in_admin_id = admin_id  # Store logged-in admin ID
+                st.success("Login successful.")
+            else:
+                st.error("Invalid Admin ID or Password.")
+
+    # Admin Management (only available after successful login)
+    if st.session_state.admin_authenticated:
+        st.subheader("Registered Admin Accounts")
+
+        # Fetch all registered admin accounts
+        cursor.execute(""" 
+        SELECT a.admin_id, a.active, ap.email 
+        FROM admin a 
+        LEFT JOIN admin_profile ap ON a.admin_id = ap.admin_id
+        """)
+        admins = cursor.fetchall()
+
+        if admins:
+            for admin in admins:
+                admin_id, active, email = admin
+                status = "Active" if active else "Inactive"
+
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+                with col1:
+                    st.text(f"Admin ID: {admin_id}")
+                with col2:
+                    st.text(f"Status: {status}")
+                with col3:
+                    if st.button(f"Request OTP for {admin_id}") and email:
+                        # Check if the admin ID is 'admin' (the logged-in admin ID)
+                        if admin_id == "admin":
+                            # Send OTP to logged-in admin's email
+                            logged_in_admin_email = st.session_state.logged_in_admin_id
+
+                            cursor.execute("SELECT email FROM admin_profile WHERE admin_id = ?", (logged_in_admin_email,))
+                            logged_in_admin_email_result = cursor.fetchone()
+                            logged_in_admin_email = logged_in_admin_email_result[0] if logged_in_admin_email_result else None
+                        else:
+                            # Send OTP to the respective admin's email
+                            logged_in_admin_email = email
+
+                        if logged_in_admin_email:
+                            otp = str(np.random.randint(100000, 999999))
+                            st.session_state.admin_otp = otp
+
+                            # SMTP Configuration
+                            smtp_server = 'smtp-relay.brevo.com'
+                            smtp_port = 587
+                            smtp_user = '823c6b001@smtp-brevo.com'
+                            smtp_password = '6tOJHT2F4x8ZGmMw'
+                            from_email = 'debojyotighoshmain@gmail.com'
+
+                            try:
+                                message = MIMEMultipart()
+                                message["From"] = from_email
+                                message["To"] = logged_in_admin_email
+                                message["Subject"] = "Admin Action OTP Verification"
+
+                                body = f"Your OTP for the requested admin action is: {otp}\n\nPlease enter this OTP to verify your request."
+                                message.attach(MIMEText(body, "plain"))
+
+                                with smtplib.SMTP(smtp_server, smtp_port) as server:
+                                    server.starttls()
+                                    server.login(smtp_user, smtp_password)
+                                    server.sendmail(from_email, logged_in_admin_email, message.as_string())
+
+                                st.success(f"OTP sent to your email {logged_in_admin_email}. Please check your email.")
+                            except Exception as e:
+                                st.error(f"Failed to send OTP: {e}")
+                        else:
+                            st.error("No email found for this admin. Cannot send OTP.")
+
+                    # Verify OTP
+                    otp_input = st.text_input(f"Enter OTP for {admin_id}", key=f"otp_{admin_id}")
+                    if st.button(f"Verify OTP for {admin_id}"):
+                        if otp_input == st.session_state.admin_otp:
+                            st.session_state.otp_verified = True
+                            st.success("OTP verified successfully!")
+                        else:
+                            st.error("Invalid OTP. Please try again.")
+
+                    # Activate/Deactivate/Remove buttons (only enabled after OTP verification)
+                    if st.session_state.otp_verified:
+                        if active:
+                            if st.button(f"Deactivate {admin_id}"):
+                                cursor.execute("UPDATE admin SET active = 0 WHERE admin_id = ?", (admin_id,))
+                                cursor.execute("INSERT INTO admin_audit (admin_id, action, timestamp) VALUES (?, 'Deactivated', ?)", (admin_id, datetime.now()))
+                                conn.commit()
+                                st.success(f"Admin account '{admin_id}' has been deactivated.")
+                        else:
+                            if st.button(f"Activate {admin_id}"):
+                                cursor.execute("UPDATE admin SET active = 1 WHERE admin_id = ?", (admin_id,))
+                                cursor.execute("INSERT INTO admin_audit (admin_id, action, timestamp) VALUES (?, 'Activated', ?)", (admin_id, datetime.now()))
+                                conn.commit()
+                                st.success(f"Admin account '{admin_id}' has been activated.")
+
+                        if st.button(f"Remove {admin_id}"):
+                            cursor.execute("DELETE FROM admin WHERE admin_id = ?", (admin_id,))
+                            cursor.execute("DELETE FROM admin_profile WHERE admin_id = ?", (admin_id,))
+                            cursor.execute("INSERT INTO admin_audit (admin_id, action, timestamp) VALUES (?, 'Removed', ?)", (admin_id, datetime.now()))
+                            conn.commit()
+                            st.success(f"Admin account '{admin_id}' and its profile have been removed.")
+        else:
+            st.info("No admin accounts found.")
+
+        # Activity History Section
+        st.subheader(f"Activity History for Admin: {st.session_state.logged_in_admin_id}")
+
+        # Fetch the audit trail for the logged-in admin
+        cursor.execute("""
+        SELECT action, timestamp FROM admin_audit
+        WHERE admin_id = ?
+        ORDER BY timestamp DESC
+        """, (st.session_state.logged_in_admin_id,))
+        activities = cursor.fetchall()
+
+        if activities:
+            for activity in activities:
+                action, timestamp = activity
+                st.write(f"**Action:** {action}")
+                st.write(f"**Timestamp:** {timestamp}")
+                st.write("-" * 50)
+        else:
+            st.info("No activity history found for this admin.")
+
+        # Option to reset the default admin account if needed
+        st.subheader("Restore Default Admin Account")
+        if st.button("Request OTP for Restore Default Admin"):
+            # Generate OTP for restoring the default admin account
+            otp = str(np.random.randint(100000, 999999))
+            st.session_state.admin_otp = otp
+
+            # Fetch the logged-in admin's email
+            cursor.execute("SELECT email FROM admin_profile WHERE admin_id = ?", (st.session_state.logged_in_admin_id,))
+            admin_email = cursor.fetchone()
+            admin_email = admin_email[0] if admin_email else None
+
+            if admin_email:
+                # Send OTP to the logged-in admin
+                try:
+                    message = MIMEMultipart()
+                    message["From"] = from_email
+                    message["To"] = admin_email
+                    message["Subject"] = "Admin Action OTP Verification"
+
+                    body = f"Your OTP for restoring the default admin account is: {otp}\n\nPlease enter this OTP to verify your request."
+                    message.attach(MIMEText(body, "plain"))
+
+                    with smtplib.SMTP(smtp_server, smtp_port) as server:
+                        server.starttls()
+                        server.login(smtp_user, smtp_password)
+                        server.sendmail(from_email, admin_email, message.as_string())
+
+                    st.success(f"OTP sent to your email {admin_email}. Please check.")
+                except Exception as e:
+                    st.error(f"Failed to send OTP: {e}")
+            else:
+                st.error("No email found for the logged-in admin.")
+
+        otp_input_restore = st.text_input("Enter OTP to Restore Default Admin")
+        if st.button("Verify OTP to Restore"):
+            if otp_input_restore == st.session_state.admin_otp:
+                st.session_state.otp_verified = True
+                st.success("OTP verified successfully!")
+            else:
+                st.error("Invalid OTP. Please try again.")
+
+        if st.session_state.otp_verified:
+            if st.button("Restore Default Admin"):
+                cursor.execute(""" 
+                INSERT OR IGNORE INTO admin (admin_id, password, active) 
+                VALUES ('admin', 'admin123', 1)
+                """)
+                cursor.execute(""" 
+                INSERT OR IGNORE INTO admin_profile (admin_id, name, department, designation, email, phone, face_encoding) 
+                VALUES ('admin', 'Default Admin', 'IT', 'Administrator', 'defaultadmin@example.com', '1234567890', NULL)
+                """)
+                cursor.execute("INSERT INTO admin_audit (admin_id, action, timestamp) VALUES ('admin', 'Restored', ?)", (datetime.now(),))
+                conn.commit()
+                st.success("Default admin account has been restored.")
+
+elif menu == "Lab Examination System" : 
+    st.title("AI-Enabled Lab Examination System")
+    st.title("AILES")
+    st.success("Welcome to the Lab Examination System. Get started with your lab journey!")
+    st.info("This system allows you to conduct lab examinations for students.")
+    st.info("You can add questions, conduct exams, and view results here with a lot of patented features.")
+    # Add a button with a modern design
+    st.markdown(
+        """
+        <style>
+        .redirect-button {
+            display: inline-block;
+            background-color:rgb(16, 55, 117);
+            color:rgb(17, 42, 143);
+            font-size: 18px;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+            box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .redirect-button:hover {
+            background-color:rgb(136, 41, 173);
+            text-decoration: none;
+        }
+        </style>
+        <a href="https://les-beta.netlify.app/" target="_blank" class="redirect-button">Let's Go!</a>
+        """,
+        unsafe_allow_html=True,
+    )
