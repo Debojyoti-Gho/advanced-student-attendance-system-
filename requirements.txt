@@ -1,11 +1,10 @@
 streamlit
-dlib==19.24.6 --no-cache-dir
-cmake>=3.22.0
+mediapipe
+opencv-python
 asyncio
 bleak
 reportlab
 matplotlib
-opencv-python
 face_recognition
 uuid
 scipy
