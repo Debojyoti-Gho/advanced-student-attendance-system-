@@ -1,6 +1,4 @@
-pip==24.3.1
 streamlit
-wheels/dlib-19.24.0-cp39-cp39-win_amd64.whl
 dlib
 asyncio
 bleak
