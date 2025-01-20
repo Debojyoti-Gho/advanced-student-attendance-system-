@@ -1,6 +1,4 @@
 streamlit
-dlib==19.24.1
-cmake>=3.22.0
 mediapipe
 opencv-python
 asyncio
