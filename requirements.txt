@@ -1,5 +1,5 @@
 streamlit
-dlib==19.22.99  # Adjust based on compatibility
+dlib==19.22.99 --no-cache-dir
 cmake>=3.22.0
 asyncio
 bleak
