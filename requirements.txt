@@ -1,6 +1,6 @@
 streamlit
-cmake
-dlib
+dlib==19.22.99  # Adjust based on compatibility
+cmake>=3.22.0
 asyncio
 bleak
 reportlab
