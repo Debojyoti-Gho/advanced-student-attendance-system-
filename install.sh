@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Update and install dependencies required to build CMake
-apt-get update && apt-get install -y build-essential curl
-
 # Download and extract CMake source
 curl -LO https://cmake.org/files/v3.31/cmake-3.31.4.tar.gz
 tar -xzvf cmake-3.31.4.tar.gz
