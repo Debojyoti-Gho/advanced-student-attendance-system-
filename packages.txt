@@ -4,3 +4,9 @@ build-essential
 cmake
 curl
 bluetooth
+libglib2.0-dev
+bluetooth
+bluez
+libbluetooth-dev
+python3-dev
+
