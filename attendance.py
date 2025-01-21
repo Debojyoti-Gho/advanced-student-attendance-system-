@@ -729,35 +729,24 @@ def get_precise_location(api_key=None):
             st.error(f"ipinfo.io request failed: {str(e)}")
             return "Error with ipinfo.io request."
 
-async def get_ble_signal():
+# Get available Bluetooth devices using Flask API
+def get_ble_signal_from_api():
     """
-    Get the available Bluetooth Low Energy (BLE) devices in range.
-    This function uses BleakScanner to scan for devices and checks if Bluetooth is on.
+    Fetch BLE signals by making a GET request to the Flask BLE API server.
+    Replace the URL with your Flask server's actual endpoint.
     """
     try:
-        # Try to discover BLE devices
-        devices = await BleakScanner.discover()
+        url = "http://127.0.0.1:5000"  # Replace with your Flask API URL
+        response = requests.get(url)
         
-        # If no devices found, Bluetooth is likely on, but no devices are nearby
-        ble_signals = {device.address: device.name if device.name else device.address for device in devices}
-        
-        return ble_signals
-    
-    except BleakError:
-        # If there is an issue discovering devices (Bluetooth might be off)
-        return {"status": "Bluetooth is off or unavailable. Please turn on Bluetooth."}
-    
-    except Exception as e:
-        # Generic exception handling for any other unexpected errors
-        return {"status": f"An unexpected error occurred or Bluetooth might be off ,please check: {str(e)}"}
-
-def detect_ble_signal():
-    """
-    Run the BLE signal detection function using asyncio.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    return loop.run_until_complete(get_ble_signal())
+        if response.status_code == 200:
+            return response.json()  # Parse and return the JSON response from the Flask server
+        else:
+            st.error(f"Failed to fetch BLE devices. Status Code: {response.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error connecting to the BLE API: {e}")
+        return None
 
 def get_current_period():
     """
@@ -946,33 +935,37 @@ elif menu == "Student Login":
                     # Check for Bluetooth signal during login session
                     st.info("just a step away from your dashboard !! Scanning for Bluetooth devices...")
 
-                    # Get available Bluetooth devices
-                    ble_signal = detect_ble_signal()
-
+                    # Replace the original BLE signal detection logic
+                    ble_signal = get_ble_signal_from_api()
+                    
                     if ble_signal:
-                        st.info("Bluetooth devices found. Listing all available devices...")
-                        
-                        # Display all available Bluetooth devices
-                        st.write("Available Bluetooth devices:")
-                        for device_name, mac_address in ble_signal.items():
-                            st.write(f"Device Name: {mac_address}, MAC Address: {device_name}")
-
-                        # Automatically check if the required Bluetooth device is in the list
-                        required_device_name = "76:6B:E1:0F:92:09"
-                        required_mac_id = "INSTITUTE BLE VERIFY SIGNA"  # Replace with the actual MAC address if known
-
-                        found_device = False
-                        for device_name, mac_address in ble_signal.items():
-                            if required_device_name in device_name or mac_address == required_mac_id:
-                                st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
-                                found_device = True
-                                break
-
-                        if found_device:
-                            # Save user login to session state
-                            st.session_state.logged_in = True
-                            st.session_state.user_id = user_id
-                            st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
+                        if isinstance(ble_signal, dict) and "status" in ble_signal:
+                            # Handle API status response (e.g., Bluetooth is off)
+                            st.warning(ble_signal["status"])
+                        else:
+                            st.info("Bluetooth devices found. Listing all available devices...")
+                            
+                            # Display all available Bluetooth devices
+                            st.write("Available Bluetooth devices:")
+                            for device_name, mac_address in ble_signal.items():
+                                st.write(f"Device Name: {mac_address}, MAC Address: {device_name}")
+                    
+                            # Automatically check if the required Bluetooth device is in the list
+                            required_device_name = "76:6B:E1:0F:92:09"
+                            required_mac_id = "INSTITUTE BLE VERIFY SIGNA"  # Replace with the actual MAC address if known
+                    
+                            found_device = False
+                            for device_name, mac_address in ble_signal.items():
+                                if required_device_name in device_name or mac_address == required_mac_id:
+                                    st.success(f"Required Bluetooth device found! Device Name: {device_name}, MAC Address: {mac_address}")
+                                    found_device = True
+                                    break
+                    
+                            if found_device:
+                                # Save user login to session state
+                                st.session_state.logged_in = True
+                                st.session_state.user_id = user_id  # Replace with actual user ID if available
+                                st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
 
                             # Define constant for period times
                             PERIOD_TIMES = {
