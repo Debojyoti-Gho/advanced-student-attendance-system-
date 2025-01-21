@@ -18,3 +18,5 @@ cd ..
 
 # Install Python dependencies
 pip install --no-cache-dir -r requirements.txt
+pip install --no-cache-dir bleak==0.20.2
+
