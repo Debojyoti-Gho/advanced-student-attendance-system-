@@ -11,5 +11,5 @@ scikit-learn==1.2.0
 matplotlib==3.7.1
 reportlab==3.6.12
 requests==2.31.0
-bleak==0.20.2
+bleak
 uuid==1.30
