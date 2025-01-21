@@ -27,5 +27,5 @@ cd ..
 # Install Python dependencies
 pip install --no-cache-dir -r requirements.txt
 pip install --no-cache-dir bleak==0.20.2
-pip install --no-cache-dir reportlab
+pip install --no-cache-dir reportlab==3.5.67
 
