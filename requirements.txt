@@ -14,3 +14,4 @@ requests==2.31.0
 bleak
 uuid==1.30
 reportlab
+letter
