@@ -9,7 +9,7 @@ torchvision==0.15.2
 -f https://download.pytorch.org/whl/cpu
 scikit-learn==1.2.0
 matplotlib==3.7.1
-reportlab==3.6.12
+reportlab
 requests==2.31.0
 bleak
 uuid==1.30
