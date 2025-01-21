@@ -1,13 +1,12 @@
-streamlit
-mediapipe
-opencv-python
-asyncio
-bleak
-reportlab
-matplotlib
-face_recognition
-uuid
-scipy
-torch
-torchvision
-scikit-learn
+streamlit==1.25.0
+numpy==1.24.0
+opencv-python-headless==4.8.0.74  # Use 'headless' for reduced size
+face-recognition==1.3.0
+scipy==1.10.0
+torch==2.0.0
+torchvision==0.15.0
+scikit-learn==1.3.0
+matplotlib==3.7.0
+reportlab==3.6.0
+requests==2.31.0
+
