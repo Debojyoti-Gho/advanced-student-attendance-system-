@@ -1,7 +1,5 @@
 import sqlite3
 import streamlit as st
-import asyncio
-from bleak import BleakScanner,BleakError
 import datetime
 from datetime import date, datetime,timedelta
 from reportlab.lib.pagesizes import letter
@@ -967,6 +965,9 @@ elif menu == "Student Login":
                                 st.session_state.user_id = user_id  # Replace with actual user ID if available
                                 st.session_state.bluetooth_selected = True  # Mark Bluetooth as selected
 
+                            else:
+                                st.error("Required Bluetooth device not found. Login failed.")
+
                             # Define constant for period times
                             PERIOD_TIMES = {
                                 "Period 1": ("09:30", "10:20"),
@@ -1041,9 +1042,6 @@ elif menu == "Student Login":
                                     st.error(f"An error occurred: {e}")
                             else:
                                 st.warning("No active class period at the moment.")
-
-                        else:
-                            st.error("Required Bluetooth device not found. Login failed.")
                     else:
                         st.error("No Bluetooth devices found.")
                 else:
