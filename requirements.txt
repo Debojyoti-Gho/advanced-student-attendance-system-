@@ -13,12 +13,3 @@ reportlab==3.6.12
 requests==2.31.0
 bleak==0.20.2
 uuid==1.30
-
-# install.sh
-cd libs
-tar -xvzf cmake-3.31.4.tar.gz
-cd cmake-3.31.4
-./bootstrap
-make
-sudo make install
-
