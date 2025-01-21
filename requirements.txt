@@ -1,6 +1,6 @@
 streamlit==1.25.0
 numpy==1.24.0
-opencv-python-headless==4.8.0.74
+opencv-python-headless==4.7.0.72  # Example (make sure to pick a working version)
 wheel
 dlib
 face-recognition==1.3.0
