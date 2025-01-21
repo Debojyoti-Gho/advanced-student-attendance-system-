@@ -13,5 +13,5 @@ reportlab==3.6.12
 requests==2.31.0
 bleak
 uuid==1.30
-reportlab
+reportlab.lib.pagesizes
 
