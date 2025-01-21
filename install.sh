@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Install required system dependencies for bleak
+apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-dev \
+    bluetooth \
+    bluez \
+    libbluetooth-dev \
+    python3-dev
+    
 # Download and extract CMake source
 curl -LO https://cmake.org/files/v3.31/cmake-3.31.4.tar.gz
 tar -xzvf cmake-3.31.4.tar.gz
