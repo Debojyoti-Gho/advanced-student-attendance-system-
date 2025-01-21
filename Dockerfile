@@ -13,7 +13,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     wget \
+    libboost-all-dev \
+    libopenblas-dev \
     && pip install --no-cache-dir -r requirements.txt
+
+# Install prebuilt dlib wheel if available (for Linux)
+COPY ./wheels/dlib-19.22.99-cp38-cp38-manylinux2014_x86_64.whl /app/
+RUN pip install /app/dlib-19.22.99-cp38-cp38-manylinux2014_x86_64.whl
 
 # Step 5: Expose port (optional)
 EXPOSE 8501
