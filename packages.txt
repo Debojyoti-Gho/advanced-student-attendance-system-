@@ -3,3 +3,4 @@ libglib2.0-0
 build-essential
 cmake
 curl
+bluetooth
