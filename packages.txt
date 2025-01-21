@@ -9,4 +9,4 @@ bluetooth
 bluez
 libbluetooth-dev
 python3-dev
-
+reportlab
