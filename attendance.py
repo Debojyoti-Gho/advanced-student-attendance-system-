@@ -25,7 +25,7 @@ from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
 # Database setup
-conn = sqlite3.connect("/Users/debojyotighosh/Desktop/asasspecial.db", check_same_thread=False)
+conn = sqlite3.connect("asasspecial.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # Create tables
