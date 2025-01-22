@@ -7,6 +7,8 @@ apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth-dev \
     python3-dev
+    fpdf
+    
     
 # Download and extract CMake source
 curl -LO https://cmake.org/files/v3.31/cmake-3.31.4.tar.gz
