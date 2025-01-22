@@ -25,7 +25,6 @@ export PATH=/opt/cmake/bin:$PATH
 cd ..
 
 # Install Python dependencies
-pip install --no-cache-dir -r requirements.txt
-pip install --no-cache-dir bleak==0.20.2
-pip install reportlab[pycairo]
+pip install -r requirements.txt
+
 
