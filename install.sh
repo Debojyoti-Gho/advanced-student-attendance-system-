@@ -4,7 +4,8 @@ set -e  # Exit immediately if a command exits with a non-zero status
 set -o pipefail  # Consider a pipeline as failed if any command fails
 
 # Update and install required system dependencies
-apt-get update && apt-get install -y --no-install-recommends \
+apt-get update && apt-get install -y libgl1 libglib2.0-0 build-essential cmake curl bluetooth libglib2.0-dev bluez libbluetooth-dev python3-dev\
+
     libglib2.0-dev \
     bluetooth \
     bluez \
