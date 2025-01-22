@@ -28,5 +28,6 @@ cd ..
 
 # Install Python dependencies
 pip install -r requirements.txt
+pip install fpdf
 
 
