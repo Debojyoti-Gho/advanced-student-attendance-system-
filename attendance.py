@@ -3,21 +3,21 @@ import streamlit as st
 import datetime
 from datetime import date, datetime,timedelta
 from io import BytesIO
-#from fpdf import FPDF
-#import matplotlib.pyplot as plt
+from fpdf import FPDF
+import matplotlib.pyplot as plt
 import uuid
 import hashlib
 import platform
 import requests
-#import cv2
-#import face_recognition
+import cv2
+import face_recognition
 import numpy as np
-#from scipy.spatial.distance import euclidean
+from scipy.spatial.distance import euclidean
 import time
-#import torch
-#from torchvision import transforms
-#from sklearn.cluster import DBSCAN
-#from sklearn.neighbors import KDTree
+import torch
+from torchvision import transforms
+from sklearn.cluster import DBSCAN
+from sklearn.neighbors import KDTree
 import logging
 import smtplib
 from email.mime.text import MIMEText
