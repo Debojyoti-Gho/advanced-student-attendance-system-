@@ -4,7 +4,7 @@ import datetime
 from datetime import date, datetime,timedelta
 from io import BytesIO
 #from fpdf import FPDF
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import uuid
 import hashlib
 import platform
