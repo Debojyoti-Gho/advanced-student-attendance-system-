@@ -9,7 +9,7 @@ import uuid
 import hashlib
 import platform
 import requests
-import cv2
+#import cv2
 import face_recognition
 import numpy as np
 from scipy.spatial.distance import euclidean
