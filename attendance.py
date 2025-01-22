@@ -14,10 +14,10 @@ import requests
 import numpy as np
 #from scipy.spatial.distance import euclidean
 import time
-import torch
-from torchvision import transforms
-from sklearn.cluster import DBSCAN
-from sklearn.neighbors import KDTree
+#import torch
+#from torchvision import transforms
+#from sklearn.cluster import DBSCAN
+#from sklearn.neighbors import KDTree
 import logging
 import smtplib
 from email.mime.text import MIMEText
